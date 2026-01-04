@@ -73,7 +73,7 @@ def parse_ascii_grid(value):
     """
     lines = value.strip().splitlines()
     # Filter out empty lines or comments if needed, but strict 14 lines is better for now
-    lines = [l.strip() for l in lines if l.strip()]
+    lines = [li.strip() for li in lines if li.strip()]
 
     if len(lines) != 14:
         raise cv.Invalid(f"Grid must have exactly 14 rows, got {len(lines)}")
@@ -94,8 +94,8 @@ def parse_ascii_grid(value):
     # Input Row 0 -> Output Row 3
     # Input Col 0 -> Output Col 1
 
-    offset_row = 3
-    offset_col = 1
+    offset_row = 0
+    offset_col = 2
 
     for r in range(14):
         line = lines[r].replace(" ", "")
@@ -123,7 +123,8 @@ def parse_ascii_grid(value):
         grid_data[out_r * 2] = (row_val >> 8) & 0xFF
         grid_data[out_r * 2 + 1] = row_val & 0xFF
 
-    return list(grid_data)
+    gd = list(grid_data)
+    return gd
 
 
 def grid_to_hex_string(grid_data):

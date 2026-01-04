@@ -611,8 +611,9 @@ class AqaraFP2Card extends HTMLElement {
         // Raw coordinates: X in [-400, +400], Y in [0, 800]
         // X = +400: Left edge, X = -400: Right edge
         // Y = 0: Top edge (closest to sensor), Y = 800: Bottom edge (farthest from sensor)
-        // Conversion: Grid_X = (X + 400) / 800.0 * 14.0, Grid_Y = Y / 800.0 * 14.0
-        gridX = (target.x + 400) / 800.0 * 14.0;
+        // Conversion (with X flipped to match canvas coords where 0 is left):
+        // Grid_X = (-X + 400) / 800.0 * 14.0, Grid_Y = Y / 800.0 * 14.0
+        gridX = (-target.x + 400) / 800.0 * 14.0;
         gridY = target.y / 800.0 * 14.0;
       } else {
         // Wall mounting mode - TODO: coordinate conversion not yet verified
@@ -655,8 +656,8 @@ class AqaraFP2Card extends HTMLElement {
 
         // Convert velocity using the same coordinate system as position
         if (data.mountingPosition === "left_upper_corner" || data.mountingPosition === "right_upper_corner") {
-          // Velocity scaling: same as position, but without the bias offset
-          vx = target.velocity_x / 800.0 * 14.0;
+          // Velocity scaling: same as position, but without the bias offset (and X is negated)
+          vx = -target.velocity_x / 800.0 * 14.0;
           vy = target.velocity_y / 800.0 * 14.0;
         } else {
           // Wall mounting mode - placeholder
