@@ -205,20 +205,53 @@ class AqaraFP2Card extends HTMLElement {
       }
     };
 
-    // Helper to parse JSON attributes
-    const getJsonAttribute = (entityId) => {
-      const state = hass.states[entityId];
-      if (!state) {
-        console.warn(`[FP2 Card] ✗ JSON entity not found: ${entityId}`);
-        return null;
-      }
+    // Helper to decode base64 target data
+    // Binary format: [count(1)][target(14) * count]
+    // Each target: id(1), x(2), y(2), z(2), velocity(2), snr(2), classifier(1), posture(1), active(1)
+    const decodeTargetsBase64 = (base64String) => {
+      if (!base64String || base64String === "") return [];
+
       try {
-        const parsed = JSON.parse(state.state);
-        console.log(`[FP2 Card] ✓ JSON entity parsed: ${entityId}`, parsed);
-        return parsed;
+        // Decode base64 to binary
+        const binaryString = atob(base64String);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        if (bytes.length < 1) return [];
+
+        const count = bytes[0];
+        const targets = [];
+
+        // Parse big-endian int16 values
+        const getInt16 = (offset) => {
+          const val = (bytes[offset] << 8) | bytes[offset + 1];
+          return val > 32767 ? val - 65536 : val;
+        };
+
+        for (let i = 0; i < count; i++) {
+          const offset = 1 + (i * 14);
+          if (offset + 14 > bytes.length) break;
+
+          targets.push({
+            id: bytes[offset],
+            x: getInt16(offset + 1),
+            y: getInt16(offset + 3),
+            z: getInt16(offset + 5),
+            velocity: getInt16(offset + 7),
+            snr: getInt16(offset + 9),
+            classifier: bytes[offset + 11],
+            posture: bytes[offset + 12],
+            active: bytes[offset + 13],
+          });
+        }
+
+        console.log(`[FP2 Card] ✓ Decoded ${targets.length} targets from base64`);
+        return targets;
       } catch (e) {
-        console.error(`[FP2 Card] ✗ JSON parse error for ${entityId}:`, e.message, `Raw value: "${state.state}"`);
-        return null;
+        console.error(`[FP2 Card] ✗ Base64 decode error:`, e.message);
+        return [];
       }
     };
 
@@ -368,11 +401,12 @@ class AqaraFP2Card extends HTMLElement {
     console.log(`[FP2 Card] Total zones discovered: ${zones.length}`);
 
     // --- Full Location Data Sensor ---
-    // Text sensor containing JSON array with all target locations
-    // Format: [{ id, x, y, velocity_x, velocity_y }, ...]
+    // Text sensor containing base64-encoded binary target data
+    // Binary format: [count(1)][target(14) * count]
     console.log(`[FP2 Card] Loading target data...`);
-    const targetData = getJsonAttribute(`${prefix}_targets`);
-    const targetCount = targetData ? targetData.length : 0;
+    const targetsBase64 = getEntityState(`${prefix}_targets`);
+    const targetData = decodeTargetsBase64(targetsBase64);
+    const targetCount = targetData.length;
     console.log(`[FP2 Card] Total targets: ${targetCount}`);
 
     const result = {
@@ -698,56 +732,6 @@ class AqaraFP2Card extends HTMLElement {
       this.ctx.textAlign = "center";
       this.ctx.textBaseline = "middle";
       this.ctx.fillText(target.id || "?", xPos, yPos);
-
-      // Draw velocity vector if available
-      if (target.velocity_x !== undefined && target.velocity_y !== undefined) {
-        let vx, vy;
-
-        // Convert velocity using the same coordinate system as position
-        if (data.mountingPosition === "left_upper_corner" || data.mountingPosition === "right_upper_corner") {
-          // Velocity scaling: same as position, but without the bias offset (and X is negated)
-          vx = -target.velocity_x / 800.0 * 14.0;
-          vy = target.velocity_y / 800.0 * 14.0;
-        } else {
-          // Wall mounting mode - placeholder
-          vx = target.velocity_x * 0.01;
-          vy = target.velocity_y * 0.01;
-        }
-
-        const magnitude = Math.sqrt(vx * vx + vy * vy);
-
-        if (magnitude > 0.1) {
-          const arrowLength = Math.min(
-            magnitude * cellSize * 2,
-            cellSize * 1.5,
-          );
-          const endX = xPos + (vx / magnitude) * arrowLength;
-          const endY = yPos + (vy / magnitude) * arrowLength;
-
-          this.ctx.strokeStyle = "rgba(255, 150, 0, 0.8)";
-          this.ctx.lineWidth = 2;
-          this.ctx.beginPath();
-          this.ctx.moveTo(xPos, yPos);
-          this.ctx.lineTo(endX, endY);
-          this.ctx.stroke();
-
-          // Draw arrowhead
-          const angle = Math.atan2(vy, vx);
-          const arrowSize = 8;
-          this.ctx.beginPath();
-          this.ctx.moveTo(endX, endY);
-          this.ctx.lineTo(
-            endX - arrowSize * Math.cos(angle - Math.PI / 6),
-            endY - arrowSize * Math.sin(angle - Math.PI / 6),
-          );
-          this.ctx.moveTo(endX, endY);
-          this.ctx.lineTo(
-            endX - arrowSize * Math.cos(angle + Math.PI / 6),
-            endY - arrowSize * Math.sin(angle + Math.PI / 6),
-          );
-          this.ctx.stroke();
-        }
-      }
     });
   }
 

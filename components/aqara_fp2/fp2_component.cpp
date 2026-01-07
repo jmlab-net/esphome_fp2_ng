@@ -1,5 +1,6 @@
 #include "fp2_component.h"
 #include "esphome/components/switch/switch.h"
+#include "esphome/core/base64.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 #include <cstdint>
@@ -59,7 +60,8 @@ void FP2Component::set_location_reporting_enabled(bool enabled) {
   this->location_reporting_active_ = enabled;
   this->enqueue_command_(OpCode::WRITE, 0x0112, (uint8_t)(enabled ? 1 : 0));
   if (!enabled && this->target_tracking_sensor_ != nullptr) {
-    this->target_tracking_sensor_->publish_state("[]");
+    // Publish empty targets as base64: single byte with count=0 -> "AA=="
+    this->target_tracking_sensor_->publish_state("AA==");
   }
 }
 
@@ -490,40 +492,28 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   }
 
   uint8_t count = payload[5];
-  std::string json_str = "[";
-  char buf[256];
+
+  // Build binary buffer: [count][target1 14 bytes][target2 14 bytes]...
+  // Each target is 14 bytes: id(1), x(2), y(2), z(2), velocity(2), snr(2), classifier(1), posture(1), active(1)
+  std::vector<uint8_t> binary_data;
+  binary_data.push_back(count);
 
   for (int i = 0; i < count; i++) {
     int offset = 6 + (i * 14);
     if (offset + 14 > payload.size())
       break;
 
-    const uint8_t *p = &payload[offset];
-
-    // Parse target data (Big Endian)
-    uint8_t tid = p[0];
-    int16_t x = (int16_t)((p[1] << 8) | p[2]);
-    int16_t y = (int16_t)((p[3] << 8) | p[4]);
-    int16_t z = (int16_t)((p[5] << 8) | p[6]);
-    int16_t velocity = (int16_t)((p[7] << 8) | p[8]);
-    int16_t snr = (int16_t)((p[9] << 8) | p[10]);
-    uint8_t classifier = p[11];
-    uint8_t posture = p[12];
-    uint8_t active = p[13];
-
-    snprintf(buf, sizeof(buf),
-             "{\"id\":%d,\"x\":%d,\"y\":%d,\"z\":%d,\"velocity\":%d,\"snr\":"
-             "%d,\"classifier\":%d,\"posture\":%d,\"active\":%d}",
-             tid, x, y, z, velocity, snr, classifier, posture, active);
-
-    if (i > 0)
-      json_str += ",";
-    json_str += buf;
+    // Copy raw 14-byte target data directly (already in correct big-endian format)
+    binary_data.insert(binary_data.end(),
+                       payload.begin() + offset,
+                       payload.begin() + offset + 14);
   }
-  json_str += "]";
+
+  // Base64 encode the binary data
+  std::string base64_str = base64::encode(binary_data);
 
   if (this->target_tracking_sensor_ != nullptr) {
-    this->target_tracking_sensor_->publish_state(json_str);
+    this->target_tracking_sensor_->publish_state(base64_str);
   }
 }
 
