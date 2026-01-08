@@ -197,12 +197,14 @@ public:
   // Map configuration
   void set_map_config_json(const std::string &json) { map_config_json_ = json; }
   JsonDocument get_map_config_json();
+  void json_get_map_data(JsonObject root);
 
 protected:
   // Internal logic
   void process_command_queue_();
   void send_next_command_();
   void handle_incoming_byte_(uint8_t byte);
+  const char* get_mounting_position_string_();
   void handle_parsed_frame_(uint8_t type, uint16_t sub_id,
                             const std::vector<uint8_t> &payload);
   void handle_ack_(uint16_t sub_id);

@@ -185,6 +185,19 @@ void FP2Component::check_initialization_() {
         zone->map_sensor->publish_state(grid_to_hex_card_format(zone->grid));
       }
     }
+
+    // 7. Publish known initial states after reset
+    // After radar reset, we know there is no occupancy/motion detected yet
+    ESP_LOGI(TAG, "Publishing initial zone states (no presence/motion after reset)");
+    for (const auto &zone : zones_) {
+      zone->publish_presence(false);
+      zone->publish_motion(false);
+    }
+
+    // Clear target tracking state - no targets after reset
+    if (target_tracking_sensor_ != nullptr) {
+      target_tracking_sensor_->set_has_state(false);
+    }
   }
 }
 
@@ -726,6 +739,44 @@ JsonDocument FP2Component::get_map_config_json() {
   // For example, current zone states could be added here in the future
 
   return doc;
+}
+
+const char* FP2Component::get_mounting_position_string_() {
+  switch (mounting_position_) {
+    case 0x02: return "left_upper_corner";
+    case 0x03: return "right_upper_corner";
+    default: return "wall";
+  }
+}
+
+void FP2Component::json_get_map_data(JsonObject root) {
+  // Global settings
+  root["mounting_position"] = get_mounting_position_string_();
+  root["left_right_reverse"] = left_right_reverse_;
+
+  // Global grids (if configured)
+  if (has_interference_grid_) {
+    root["interference_grid"] = grid_to_hex_card_format(interference_grid_);
+  }
+  if (has_exit_grid_) {
+    root["exit_grid"] = grid_to_hex_card_format(exit_grid_);
+  }
+  if (has_edge_grid_) {
+    root["edge_grid"] = grid_to_hex_card_format(edge_grid_);
+  }
+
+  // Zones
+  if (!zones_.empty()) {
+    JsonArray zones_array = root["zones"].to<JsonArray>();
+    for (FP2Zone *zone : zones_) {
+      JsonObject zone_obj = zones_array.add<JsonObject>();
+      zone_obj["sensitivity"] = zone->sensitivity;
+      zone_obj["grid"] = grid_to_hex_card_format(zone->grid);
+      if (zone->presence_sensor != nullptr) {
+        zone_obj["presence_sensor"] = zone->presence_sensor->get_name().c_str();
+      }
+    }
+  }
 }
 
 } // namespace aqara_fp2

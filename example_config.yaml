@@ -1,10 +1,6 @@
 esphome:
   name: test-fp2
 
-  devices:
-    - id: test_sofa_zone_device
-      name: "Test Sofa Zone Device"
-
 esp32:
   board: esp32-solo1
   framework:
@@ -16,6 +12,19 @@ esp32:
     advanced:
       ignore_efuse_mac_crc: true
       ignore_efuse_custom_mac: true
+
+wifi:
+  ssid: "foo"
+  password: "12345678"
+
+api:
+  actions:
+    - action: get_map_config
+      supports_response: only
+      then:
+        - api.respond:
+            data: !lambda |-
+              id(fp2).json_get_map_data(root);
 
 # Configure `api` and `wifi`
 
@@ -132,7 +141,6 @@ binary_sensor:
     id: sofa_zone_presence
     name: "Sofa Zone Presence"
     device_class: occupancy
-    device_id: test_sofa_zone_device
 
 text_sensor:
   - platform: template
@@ -154,7 +162,6 @@ text_sensor:
   - platform: template
     id: sofa_zone_map
     name: "Zone Map"
-    device_id: test_sofa_zone_device
 
 # Status LED (README: IO27 - LED). Using one channel of RGB as status.
 # Unused: IO26, IO14

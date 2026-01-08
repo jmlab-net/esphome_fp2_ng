@@ -68,6 +68,21 @@ class AqaraFP2Card extends HTMLElement {
     });
   }
 
+  async fetchMapConfig() {
+    const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+    const service = `${deviceName}_get_map_config`;
+
+    try {
+      console.log(`[FP2 Card] Fetching map config via service: esphome.${service}`);
+      const response = await this._hass.callService('esphome', service, {}, undefined, true);
+      this.mapConfig = response.response;
+      console.log(`[FP2 Card] Map config loaded:`, this.mapConfig);
+      this.updateCard();
+    } catch (e) {
+      console.error(`[FP2 Card] Failed to fetch map config:`, e);
+    }
+  }
+
   initializeCard() {
     this.innerHTML = `
       <ha-card>
@@ -158,6 +173,9 @@ class AqaraFP2Card extends HTMLElement {
       this.updateCard();
     });
     this.resizeObserver.observe(this.content);
+
+    // Fetch map configuration from ESPHome service
+    this.fetchMapConfig();
   }
 
   updateCard() {
@@ -255,61 +273,6 @@ class AqaraFP2Card extends HTMLElement {
       }
     };
 
-    // Helper to get main device ID from an entity
-    const getMainDeviceId = () => {
-      // Try to find the main device by looking up one of the known entities
-      const testEntity = `${prefix}_edge_label_grid`;
-      if (hass.entities && hass.entities[testEntity]) {
-        const deviceId = hass.entities[testEntity].device_id;
-        console.log(`[FP2 Card] ✓ Found main device ID: ${deviceId}`);
-        return deviceId;
-      }
-      console.warn(`[FP2 Card] ✗ Could not find main device (entity registry not available or entity not found)`);
-      return null;
-    };
-
-    // Helper to find zone sub-devices
-    const findZoneSubDevices = (mainDeviceId) => {
-      if (!hass.devices || !hass.entities) {
-        console.warn(`[FP2 Card] ✗ Device/Entity registry not available`);
-        return [];
-      }
-
-      const subDevices = [];
-
-      // Find all devices that have via_device_id pointing to main device
-      Object.entries(hass.devices).forEach(([deviceId, device]) => {
-        if (device.via_device_id === mainDeviceId) {
-          console.log(`[FP2 Card] ✓ Found sub-device: ${deviceId} (${device.name || 'unnamed'})`);
-          subDevices.push({ deviceId, device });
-        }
-      });
-
-      console.log(`[FP2 Card] Total sub-devices found: ${subDevices.length}`);
-      return subDevices;
-    };
-
-    // Helper to extract entity prefix from a device's entities
-    const getDeviceEntityPrefix = (deviceId) => {
-      // Find all entities for this device
-      const deviceEntities = Object.entries(hass.entities)
-        .filter(([entityId, entity]) => entity.device_id === deviceId)
-        .map(([entityId, entity]) => entityId);
-
-      // Look for a _map entity to determine the prefix
-      const mapEntity = deviceEntities.find(id => id.endsWith('_map'));
-      if (mapEntity) {
-        // Extract prefix by removing the _map suffix and the zone identifier
-        // Format: {prefix}_zone_{id}_map -> we want {prefix}_zone_{id}
-        const prefix = mapEntity.replace(/_map$/, '');
-        console.log(`[FP2 Card] ✓ Extracted prefix for device ${deviceId}: ${prefix}`);
-        return prefix;
-      }
-
-      console.warn(`[FP2 Card] ✗ Could not determine prefix for device ${deviceId}`);
-      return null;
-    };
-
     // Helper to parse grid from hex bitmap string (14 rows × 4 hex chars = 56 chars)
     // Each row is represented by 4 hex characters (2 bytes), with the 14 LSBs indicating cell states
     const parseGrid = (gridString, gridName = "unknown") => {
@@ -341,64 +304,39 @@ class AqaraFP2Card extends HTMLElement {
       return grid;
     };
 
-    // --- Static Zone Definitions (Global Text Sensors) ---
-    // These are global zones that define the sensor's static configuration
-    console.log(`[FP2 Card] Loading static grid definitions...`);
-    const edgeLabelGrid = parseGrid(
-      getEntityState(`${prefix}_edge_label_grid`),
-      "edge_label_grid"
-    );
-    const entryExitGrid = parseGrid(
-      getEntityState(`${prefix}_entry_exit_grid`),
-      "entry_exit_grid"
-    );
-    const interferenceGrid = parseGrid(
-      getEntityState(`${prefix}_interference_grid`),
-      "interference_grid"
-    );
+    // --- Static Map Config (from ESPHome service) ---
+    // Use cached map config if available, otherwise use empty defaults
+    const mapConfig = this.mapConfig || {};
+    console.log(`[FP2 Card] Using cached map config:`, !!this.mapConfig);
 
-    // Get mounting position from entity (falls back to "wall" if not available)
-    const mountingPosition = getEntityState(`${prefix}_mounting_position`) || "wall";
+    const edgeLabelGrid = parseGrid(mapConfig.edge_grid, "edge_grid");
+    const entryExitGrid = parseGrid(mapConfig.exit_grid, "exit_grid");
+    const interferenceGrid = parseGrid(mapConfig.interference_grid, "interference_grid");
+    const mountingPosition = mapConfig.mounting_position || "wall";
 
-    // --- Detection Zones (Sub-Devices) ---
-    // Each zone is registered as a sub-device (via_device_id points to main FP2 device)
-    // Each zone sub-device has: map, occupancy state, and motion sensors
-    console.log(`[FP2 Card] Discovering zones via device registry...`);
+    // --- Detection Zones (from map config with dynamic occupancy) ---
     const zones = [];
+    if (mapConfig.zones && Array.isArray(mapConfig.zones)) {
+      mapConfig.zones.forEach((zoneConfig, index) => {
+        const zoneMap = parseGrid(zoneConfig.grid, `zone_${index}_grid`);
 
-    const mainDeviceId = getMainDeviceId();
-    if (mainDeviceId) {
-      const subDevices = findZoneSubDevices(mainDeviceId);
-
-      subDevices.forEach(({ deviceId, device }) => {
-        const zonePrefix = getDeviceEntityPrefix(deviceId);
-        if (!zonePrefix) return;
-
-        // Use the device's friendly name as the zone ID/label
-        const zoneName = device.name_by_user || device.name || deviceId;
-        console.log(`[FP2 Card] Processing zone: ${zoneName} (prefix: ${zonePrefix})`);
-
-        const mapEntity = `${zonePrefix}_map`;
-        const occupancyEntity = `${zonePrefix}_occupancy`;
-        const motionEntity = `${zonePrefix}_motion`;
-
-        const zoneMap = parseGrid(getEntityState(mapEntity), `zone_${zoneName}_map`);
-        const occupancyState = getEntityState(occupancyEntity);
-        const motionState = getEntityState(motionEntity);
+        // Look up occupancy state from the presence sensor entity
+        let occupancy = false;
+        if (zoneConfig.presence_sensor) {
+          const presenceEntityId = `binary_sensor.${zoneConfig.presence_sensor}`;
+          const presenceState = getEntityState(presenceEntityId);
+          occupancy = presenceState === "on";
+        }
 
         zones.push({
-          id: zoneName,
+          id: zoneConfig.presence_sensor || `zone_${index}`,
           map: zoneMap,
-          occupancy: occupancyState === "on",
-          motion: motionState,
+          occupancy: occupancy,
         });
-        console.log(`[FP2 Card] ✓ Zone ${zoneName}: occupancy=${occupancyState}, motion=${motionState}`);
+        console.log(`[FP2 Card] ✓ Zone ${index}: presence_sensor=${zoneConfig.presence_sensor}, occupancy=${occupancy}`);
       });
-    } else {
-      console.warn(`[FP2 Card] ✗ Could not find main device, zones will not be loaded`);
     }
-
-    console.log(`[FP2 Card] Total zones discovered: ${zones.length}`);
+    console.log(`[FP2 Card] Total zones from config: ${zones.length}`);
 
     // --- Full Location Data Sensor ---
     // Text sensor containing base64-encoded binary target data

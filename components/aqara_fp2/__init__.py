@@ -295,9 +295,8 @@ async def to_code(config):
     # Add zones
     if CONF_ZONES in config:
         zones_data = []
-        for i, zone_conf in enumerate(config[CONF_ZONES]):
+        for zone_conf in config[CONF_ZONES]:
             zone_data = {
-                "id": i + 1,
                 "sensitivity": zone_conf[CONF_SENSITIVITY],
                 "grid": grid_to_hex_string(zone_conf[CONF_GRID]),
             }
