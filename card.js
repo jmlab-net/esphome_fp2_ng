@@ -74,7 +74,7 @@ class AqaraFP2Card extends HTMLElement {
 
     try {
       console.log(`[FP2 Card] Fetching map config via service: esphome.${service}`);
-      const response = await this._hass.callService('esphome', service, {}, undefined, true);
+      const response = await this._hass.callService('esphome', service, {}, undefined, undefined, true);
       this.mapConfig = response.response;
       console.log(`[FP2 Card] Map config loaded:`, this.mapConfig);
       this.updateCard();
