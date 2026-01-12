@@ -17,6 +17,8 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
+captive_portal:
+
 api:
   encryption:
     key: !secret api_encryption_key
@@ -29,7 +31,9 @@ api:
             data: !lambda |-
               id(fp2).json_get_map_data(root);
 
-# Configure `api` and `wifi`
+ota:
+  - platform: esphome
+    password: !secret ota_password
 
 logger:
 
@@ -43,6 +47,10 @@ external_components:
   - source:
       type: local
       path: components
+  # Switch to this source to build from outside the repo
+  # - source: github://hansihe/esphome_fp2@main
+  #   refresh: 120s
+  #   components: [ aqara_fp2, aqara_fp2_accel ]
 
 aqara_fp2_accel:
   id: fp2_accel
