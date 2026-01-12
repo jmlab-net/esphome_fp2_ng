@@ -152,4 +152,6 @@ binary_sensor:
 light:
   - platform: status_led
     name: "Status LED"
-    pin: GPIO27
+    pin:
+      number: GPIO27
+      inverted: true
