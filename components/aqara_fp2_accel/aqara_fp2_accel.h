@@ -84,8 +84,9 @@ class AqaraFP2Accel : public Component {
   void set_update_interval(uint32_t interval_ms) { update_interval_ms_ = interval_ms; }
 
  protected:
-  // I2C initialization
+  // I2C initialization and diagnostics
   bool i2c_init_bus();
+  void i2c_bus_scan_();
 
   // I2C low level functions (using ESP-IDF driver directly)
   bool i2c_read_accel_xyz(int16_t *x, int16_t *y, int16_t *z);
