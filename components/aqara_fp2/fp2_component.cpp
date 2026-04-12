@@ -3,6 +3,7 @@
 #include "esphome/core/helpers.h"
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -149,6 +150,20 @@ void FP2Component::check_initialization_() {
       // 0x0107 Edge Label
       enqueue_command_blob2_(
           AttrId::EDGE_MAP, std::vector<uint8_t>(edge_grid_.begin(), edge_grid_.end()));
+    } else {
+      // Send full-coverage edge grid by default — without an edge grid the radar
+      // will not send global presence/motion reports (0x0103, 0x0104)
+      ESP_LOGI(TAG, "No edge_grid configured, sending full-coverage default");
+      GridMap full_grid;
+      // Set all 14 active rows (0-13) to full width: cols 2-15 active
+      // Binary: 0011 1111 1111 1100 = 0x3FFC
+      full_grid.fill(0);
+      for (int r = 0; r < 14; r++) {
+        full_grid[r * 2] = 0x3F;
+        full_grid[r * 2 + 1] = 0xFC;
+      }
+      enqueue_command_blob2_(AttrId::EDGE_MAP,
+          std::vector<uint8_t>(full_grid.begin(), full_grid.end()));
     }
 
     // 3. Zones
@@ -568,6 +583,30 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         }
         break;
 
+    case AttrId::REALTIME_PEOPLE:
+        if (payload.size() >= 4 && payload[2] == 0x02) {
+            uint32_t count = ((uint32_t) payload[3]) << 24
+                | ((uint32_t) payload[4]) << 16
+                | ((uint32_t) payload[5]) << 8
+                | ((uint32_t) payload[6]);
+            ESP_LOGD(TAG, "Received realtime people report: %u", count);
+            // Use same sensor as ontime — realtime is more frequent
+            if (people_count_sensor_ != nullptr) {
+                people_count_sensor_->publish_state((float) count);
+            }
+        }
+        break;
+
+    case AttrId::REALTIME_COUNT:
+        if (payload.size() >= 4 && payload[2] == 0x02) {
+            uint32_t count = ((uint32_t) payload[3]) << 24
+                | ((uint32_t) payload[4]) << 16
+                | ((uint32_t) payload[5]) << 8
+                | ((uint32_t) payload[6]);
+            ESP_LOGD(TAG, "Received realtime count report: %u", count);
+        }
+        break;
+
     case AttrId::ZONE_PRESENCE:  // Zone Presence
         // Payload: [SubID 2B] [Type 0x01(UINT16)] [ValH] [ValL]
         // ValH = ZoneID, ValL = State (1=Occ, 0=Empty)
@@ -715,7 +754,11 @@ void FP2Component::update_zone_people_counts_(const std::vector<uint8_t> &payloa
       }
     }
 
-    zone->zone_people_count_sensor->publish_state((float)zone_count);
+    // Only publish on change to avoid flooding HA at 10-20Hz
+    float current = zone->zone_people_count_sensor->get_raw_state();
+    if (std::isnan(current) || (int)current != zone_count) {
+      zone->zone_people_count_sensor->publish_state((float)zone_count);
+    }
   }
 }
 
