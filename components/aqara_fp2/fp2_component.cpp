@@ -1000,7 +1000,7 @@ std::string FP2Component::grid_to_hex_card_format(const GridMap &grid) {
 }
 
 void FP2Component::dump_config() {
-  ESP_LOGCONFIG(TAG, "Aqara FP2:");
+  ESP_LOGCONFIG(TAG, "Aqara FP2 (built " __DATE__ " " __TIME__ "):");
   ESP_LOGCONFIG(TAG, "  Mounting Position: %d", mounting_position_);
   ESP_LOGCONFIG(TAG, "  Zones: %d", zones_.size());
   if (reset_pin_ != nullptr) {
