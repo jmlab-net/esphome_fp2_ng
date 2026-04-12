@@ -123,6 +123,45 @@ Key findings from RE:
 - `FUN_400e8f8c` — Calibration init: reads NVS coefficients (lux_low_k/b, etc.)
 - `FUN_400e8d84` — Lux getter: reads structure offset +8
 - Calibration: linear k/b coefficients per range, stored in NVS
+- **OPT3001 config value**: `0xC610` (single-shot mode, 800ms, auto-range).
+  Our ESPHome driver uses `0xCE10` (continuous mode). Aqara's single-shot
+  approach saves power — sensor only converts when polled.
+
+### Completed: Handler Function Name Table
+
+**Status: SOLVED** — complete `radar_*` / `cloud_*` handler table extracted.
+
+Extracted from DROM `3f409d00 - 3f40a6c0`. Maps every SubID to its local
+handler (`radar_*`) and cloud relay handler (`cloud_*`). See
+[02-uart-protocol.md](02-uart-protocol.md) for the full table.
+
+Key discoveries:
+- `radar_zone_people_number` — radar has **native per-zone counting** (SubID unknown)
+- Cloud-only attributes found: bed height, overhead height, fall delay,
+  blind zone, disturbance suppression
+- OpCode dispatch table at `3f40a6cc` with 5 handler function pointers
+
+### Completed: OpCode Dispatch Table
+
+**Status: SOLVED** — all 5 opcode handlers identified.
+
+Found at DROM `3f40a6cc`:
+| OpCode | Handler Address |
+|--------|----------------|
+| 1 (RESPONSE) | `0x400DE904` |
+| 2 (WRITE) | `0x400DE8F0` |
+| 3 (ACK) | `0x400E1390` |
+| 4 (READ) | `0x400DE8DC` |
+| 5 (REPORT) | `0x400DE8C8` |
+
+Note: Ghidra's auto-analysis did not create functions at these addresses.
+Manual function creation in the GUI is needed before decompilation.
+
+### Completed: Radar Firmware Version Table
+
+Compatibility table at DROM `3f40a6f4`: versions `3.1.85` through `3.23.85+`.
+The `.85` suffix is shared between ESP32 app (4.x.85) and radar (3.x.85)
+firmware, likely a product variant identifier.
 
 ### Priority 1: Radar OTA (XMODEM)
 

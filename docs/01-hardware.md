@@ -98,8 +98,9 @@ esp32:
 - **Output**: Direct lux value from 16-bit result register (reg 0x00).
   Exponent (bits 15-12) and mantissa (bits 11-0):
   `lux = 0.01 * 2^exponent * mantissa`
-- **Config**: Register 0x01, continuous mode, 800ms conversion, auto-range
-  (value `0xCE10`)
+- **Config**: Register 0x01. Stock firmware uses `0xC610` (single-shot mode,
+  800ms conversion, auto-range). ESPHome driver uses `0xCE10` (continuous mode).
+  Single-shot saves power; continuous is simpler to implement.
 - **Calibration**: Stock firmware applies NVS-stored linear coefficients per range:
   `lux_low_k`, `lux_low_b` (slope/intercept for low range),
   `lux_high_k`, `lux_high_b` (slope/intercept for high range),

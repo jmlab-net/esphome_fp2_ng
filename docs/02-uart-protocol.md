@@ -59,6 +59,18 @@ header_check = (~(sum(frame[0:7]) - 1)) & 0xFF
 | 0x04 | READ | ESP32 → Radar | Standard read request, OR reverse-read response (values, replying to a 0x01 query) |
 | 0x05 | REPORT | Radar → ESP32 | Asynchronous/unsolicited report |
 
+### OpCode Dispatch Table (from RE)
+
+Found at DROM address `3f40a6cc` in the stock firmware:
+
+| OpCode | Name | Handler Address | Description |
+|--------|------|-----------------|-------------|
+| 0x01 | RESPONSE | `0x400DE904` | Response/reverse-read handler |
+| 0x02 | WRITE | `0x400DE8F0` | Write handler |
+| 0x03 | ACK | `0x400E1390` | ACK handler (largest) |
+| 0x04 | READ | `0x400DE8DC` | Read/reverse-response handler |
+| 0x05 | REPORT | `0x400DE8C8` | Report handler |
+
 ### ACK Behaviour
 
 - All WRITE commands expect an ACK from the radar
@@ -321,3 +333,115 @@ Then check the zone's grid bitmap:
 row_val = (grid[row * 2] << 8) | grid[row * 2 + 1]
 is_in_zone = (row_val & (1 << (15 - col))) != 0
 ```
+
+## Edge Grid Requirement
+
+The radar does **not** send global presence/motion reports (0x0103, 0x0104)
+unless an edge grid (0x0107) is configured. Without it, the radar tracks targets
+(0x0117 data flows) but never triggers binary presence detection.
+
+If no `edge_grid` is specified in the ESPHome config, a full-coverage default
+(all 0xFF, 20 rows x 16 cols) is sent automatically during initialization.
+
+## Handler Function Name Table (from RE)
+
+Extracted from DROM at `3f409d00 - 3f40a6c0`. Each SubID has two handler
+functions in the stock firmware:
+- `radar_*` — processes data locally (HomeKit, sensor updates)
+- `cloud_*` — relays data to Aqara cloud servers
+
+| SubID | radar_ handler | cloud_ handler |
+|-------|---------------|----------------|
+| 0x0101 | `radar_hw_version` | — |
+| 0x0102 | `radar_sw_version` | — |
+| 0x0103 | `radar_motion_detection` | `cloud_motion_detection` |
+| 0x0104 | `radar_presence_detection` | `cloud_presence_detection` |
+| 0x0105 | — | `cloud_monitor_mode` |
+| 0x0106 | — | `cloud_closing_setting` |
+| 0x0107 | — | `cloud_edge_lable` |
+| 0x0109 | — | `cloud_import_export_lable` |
+| 0x0110 | — | `cloud_interference_source` |
+| 0x0111 | — | `cloud_presence_detection_sensitivity` |
+| 0x0112 | — | `cloud_location_report_enable` |
+| 0x0114 | `radar_zone_map` | `cloud_detect_zone_setting` |
+| 0x0115 | `radar_detect_zone_motion` | `cloud_detect_zone_motion` |
+| 0x0116 | — | `cloud_work_mode` |
+| 0x0117 | `radar_location_track_data` | `cloud_location_track_data` |
+| 0x0120 | `radar_angle_sensor_data` | — |
+| 0x0121 | `radar_fall_detection` | `cloud_fall_detection` |
+| 0x0122 | — | `cloud_left_right_reverse` |
+| 0x0123 | — | `cloud_fall_detection_sensitivity` |
+| 0x0125 | `radar_interference_auto_setting` | — |
+| 0x0128 | `radar_temperature` | `cloud_temperature` |
+| 0x0134 | — | `cloud_fall_overtime_report_period` |
+| 0x0135 | `radar_fall_overtime_detection` | `cloud_fall_overtime_detection` |
+| 0x0138 | — | `cloud_thermodynamic_chart_enable` |
+| 0x0139 | — | `cloud_interference_auto_enable` |
+| 0x0141 | `radar_thermodynamic_chart_data` | `cloud_thermodynamic_chart_data` |
+| 0x0142 | `radar_detect_zone_presence` | `cloud_detect_zone_presence` |
+| 0x0143 | `radar_device_direction` | — |
+| 0x0149 | `radar_edge_auto_setting` | — |
+| 0x0150 | — | `cloud_edge_auto_enable` |
+| 0x0151 | — | `cloud_detect_zone_sensitivity` |
+| 0x0152 | — | `cloud_detect_zone_type` |
+| 0x0153 | — | `cloud_detect_zone_close_away_enalbe` |
+| 0x0154 | `radar_target_posture` | `cloud_target_posture` |
+| 0x0155 | `radar_people_counting` | `cloud_people_counting` |
+| 0x0156 | — | `cloud_sleep_report_enable` |
+| 0x0157 | — | `cloud_posture_report_enable` |
+| 0x0158 | — | `cloud_people_counting_report_enable` |
+| 0x0159 | `radar_sleep_data` | `cloud_sleep_data` |
+| 0x0160 | — | `cloud_delete_false_target` |
+| 0x0161 | `radar_sleep_state` | `cloud_sleep_state` |
+| 0x0162 | — | `cloud_people_number_enable` |
+| 0x0163 | — | `cloud_target_type_enable` |
+| 0x0164 | `radar_realtime_people_number` | `cloud_realtime_people_number` |
+| 0x0165 | `radar_ontime_people_number` | `cloud_ontime_people_number` |
+| 0x0166 | `radar_realtime_people_counting` | `cloud_realtime_people_counting` |
+| 0x0167 | `radar_sleep_presence` | `cloud_sleep_presence` |
+| 0x0168 | — | `cloud_sleep_zone_mount_position` |
+| 0x0169 | — | `cloud_sleep_zone_size` |
+| 0x0170 | — | `cloud_wall_corner_mount_position` |
+| 0x0171 | `radar_sleep_inout_state` | `cloud_sleep_inout_state` |
+| 0x0172 | — | `cloud_dwell_time_enable` |
+| 0x0173 | — | `cloud_walking_distance_enable` |
+| 0x0174 | `radar_walking_distance_all` | `cloud_walking_distance_all` |
+| 0x0176 | `radar_sleep_event` | `cloud_sleep_event` |
+| — | `radar_zone_people_number` | `cloud_zone_people_number` |
+| 0x0201 | `radar_debug_log_report` | — |
+
+### Cloud-Only Attributes (from RE)
+
+These attributes are configured/used exclusively by the Aqara cloud and have
+no corresponding SubID in the radar UART protocol:
+
+| Handler Name | Description |
+|---|---|
+| `cloud_sleep_bed_height` | Bed height configuration for sleep zone |
+| `cloud_overhead_height` | Ceiling/overhead height configuration |
+| `cloud_fall_delay_time` | Fall detection delay before alerting |
+| `cloud_falldown_blind_zone` | Fall detection exclusion zone |
+| `cloud_disturbance_enable` | Disturbance suppression toggle |
+| `cloud_disturbance_time_setting` | Disturbance suppression timing |
+| `cloud_interface_ctrl_report` | Interface control reporting |
+| `cloud_reset_absent_status` | Reset absence state |
+
+### Notable Discovery: `radar_zone_people_number`
+
+The stock firmware has a handler called `radar_zone_people_number` — the radar
+natively supports per-zone person counting. The SubID for this is not yet
+identified (may be an undocumented attribute or derived from existing data).
+Our ESPHome implementation derives per-zone counts from target tracking data
+(0x0117), but the radar may have its own built-in zone counting.
+
+## Radar Firmware Version Compatibility
+
+The stock ESP32 firmware (v4.66.85) contains a version compatibility table
+for radar firmware versions. Found at DROM `3f40a6f4`:
+
+```
+3.1.85, 3.2.85, 3.3.85, ..., 3.23.85+
+```
+
+The `.85` suffix appears to be a hardware/product variant identifier shared
+between ESP32 app firmware (4.x.85) and radar firmware (3.x.85).
