@@ -107,13 +107,20 @@ void FP2Component::loop() {
 }
 
 void FP2Component::check_initialization_() {
-  if (init_done_)
+  if (init_done_) {
+    // Log queue status periodically for debugging
+    if (!command_queue_.empty() && millis() % 10000 < 20) {
+      ESP_LOGD(TAG, "Command queue: %d pending, waiting ACK for 0x%04X",
+               command_queue_.size(), (uint16_t)waiting_for_ack_attr_id_);
+    }
     return;
+  }
 
   // We rely on handle_parsed_frame_ to set a flag or we check
   // last_heartbeat_millis_
   if (last_heartbeat_millis_ > 0) {
-    ESP_LOGI(TAG, "Heartbeat received. Starting initialization sequence...");
+    ESP_LOGW(TAG, "*** Heartbeat received at %u ms. Starting initialization sequence... ***",
+             last_heartbeat_millis_);
     init_done_ = true;
 
     // 1. Basic Settings
