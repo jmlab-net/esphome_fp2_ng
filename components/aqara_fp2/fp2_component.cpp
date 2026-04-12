@@ -116,11 +116,10 @@ void FP2Component::check_initialization_() {
     return;
   }
 
-  // Start init when we receive any valid frame from the radar.
-  // The first frame (temperature, heartbeat, or direction query) proves
-  // the radar is alive and ready to accept configuration.
+  // Wait for radar heartbeat (SubID 0x0102) which proves the radar
+  // has finished its own startup and is ready for configuration.
   if (last_heartbeat_millis_ > 0) {
-    ESP_LOGW(TAG, "*** Starting initialization (first frame at %u ms, uptime=%u ms) ***",
+    ESP_LOGW(TAG, "*** Heartbeat received at %u ms. Starting init (uptime=%u ms) ***",
              last_heartbeat_millis_, millis());
     init_done_ = true;
 
@@ -483,11 +482,8 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
                                         const std::vector<uint8_t> &payload) {
   OpCode op = (OpCode)type;
 
-  // Mark that we've received a valid frame — radar is alive
-  if (!init_done_ && last_heartbeat_millis_ == 0) {
-    last_heartbeat_millis_ = millis();
-    ESP_LOGI(TAG, "First radar frame received (op=%d, SubID=0x%04X)", type, (uint16_t)attr_id);
-  }
+  // Log all received frames for debugging
+  ESP_LOGD(TAG, "Frame: op=%d SubID=0x%04X len=%d", type, (uint16_t)attr_id, payload.size());
 
   switch (op) {
     case OpCode::ACK:
@@ -694,6 +690,11 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::TEMPERATURE:
+      // Temperature report also proves radar is alive — trigger init if heartbeat was missed
+      if (last_heartbeat_millis_ == 0) {
+        last_heartbeat_millis_ = millis();
+        ESP_LOGI(TAG, "Temperature report received before heartbeat — triggering init");
+      }
       handle_temperature_report_(payload);
       break;
 
@@ -840,6 +841,12 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 }
 
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
+  // Any response/reverse-read from radar proves it's alive
+  if (last_heartbeat_millis_ == 0) {
+    last_heartbeat_millis_ = millis();
+    ESP_LOGI(TAG, "Reverse query received before heartbeat — triggering init");
+  }
+
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
   if (payload.size() == 2) {
     handle_reverse_read_request_(attr_id);
