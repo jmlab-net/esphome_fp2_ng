@@ -2,9 +2,8 @@
 
 ## Overview
 
-This guide covers reverse engineering the stock Aqara ESP32 firmware to discover
-undocumented features — specifically the light sensor driver, radar OTA protocol,
-and unknown SubID data formats.
+This guide covers reverse engineering the stock Aqara ESP32 firmware using
+Ghidra with the MCP plugin for Claude-assisted analysis.
 
 ## Prerequisites
 
@@ -15,11 +14,10 @@ and unknown SubID data formats.
 ### Software
 - **Ghidra 12.0.3** — https://ghidra-sre.org (native Xtensa support)
 - **Java 21 LTS** (OpenJDK)
-- **Python 3.10+**
-- **esptool** — `pip install esptool`
+- **ghidra-esp32-flash-loader** (dynacylabs) — **required** for proper import
 - **ghidra-mcp** (bethington) — MCP server for Claude-assisted analysis
-- **ghidra-esp32-flash-loader** (dynacylabs) — Ghidra extension for ESP32 flash
-- **GhidraSVD** (optional) — SVD file loader extension
+- **esptool** — `pip install esptool`
+- **Xvfb + XFCE** (for headless servers) — Ghidra needs a display
 
 ## Step 1: Dump the Firmware
 
@@ -28,259 +26,215 @@ light sensor driver, radar OTA code, and all protocol handlers.
 
 ```bash
 # Hold TP28 (GPIO0) LOW during power-on to enter download mode
-# Connect USB-UART adapter: TP8=TX, TP9=RX, GND
+esptool.py --baud 230400 --port /dev/ttyUSB0 read_flash 0x0 0x1000000 fp2_stock.bin
 
-# Dump entire 16Mbit flash
-esptool.py --baud 230400 --port /dev/ttyUSB0 read_flash 0x0 0x1000000 fp2_stock_firmware.bin
-
-# Label the backup with the unit's HomeKit pairing digits
-# Flash may contain unit-specific calibration data
+# Label with unit's HomeKit digits — flash contains unit-specific calibration
 ```
 
-## Step 2: Parse the Flash Image
+## Step 2: Load in Ghidra
 
-### Option A: Ghidra Flash Loader (Recommended)
+### Install the ESP32 Flash Loader (Critical)
 
-Install the **dynacylabs/ghidra-esp32-flash-loader** extension:
-
-1. Download the release ZIP matching your Ghidra version from
-   https://github.com/dynacylabs/ghidra-esp32-flash-loader/releases
-2. Ghidra → File → Install Extensions → select ZIP → restart
-3. Import: File → Import File → select `fp2_stock_firmware.bin`
-4. The loader auto-detects ESP32, loads partitions, imports SVD
-   peripherals, and maps ROM code
-
-This is the easiest path — it handles everything automatically.
-
-### Option B: Manual ELF Extraction
+**Do not use the raw binary loader** — it does not create cross-references and
+makes analysis nearly impossible. The flash loader correctly maps segments,
+imports SVD peripherals, and resolves ROM symbols.
 
 ```bash
-# Install esp32_image_parser
-pip install esp32_image_parser
-
-# View partition table
-python3 -m esp32_image_parser show_partitions fp2_stock_firmware.bin
-
-# Extract application partition as ELF
-python3 -m esp32_image_parser create_elf fp2_stock_firmware.bin \
-    -partition ota_0 -output fp2_app.elf
-
-# Dump NVS (non-volatile storage — may contain WiFi creds, HomeKit data)
-python3 -m esp32_image_parser dump_nvs fp2_stock_firmware.bin \
-    -partition nvs -nvs_output_type json
+git clone https://github.com/dynacylabs/ghidra-esp32-flash-loader.git
+cd ghidra-esp32-flash-loader
+git checkout v12.0
+GHIDRA_INSTALL_DIR=/path/to/ghidra gradle buildExtension
+# Install: File → Install Extensions → select dist/*.zip → restart Ghidra
 ```
 
-Alternative: **esp32knife** (more actively maintained):
-```bash
-# From https://github.com/niceboygithub/AqaraPresenceSensorFP2
-pip install esp32knife
-esp32knife --chip esp32 dissect fp2_stock_firmware.bin
-```
+### Import the Firmware
 
-Then import the ELF into Ghidra manually:
-- Architecture: `Xtensa:LE:32:default`
-- Load SVD: File → Import SVD (via GhidraSVD extension) using
-  `esp32.svd` from https://github.com/espressif/svd
-- Import ROM labels from ESP-IDF's `esp32.rom.ld` linker script
+1. `File → Import File` → select the **full flash dump** (not an extracted partition)
+2. The flash loader auto-detects the ESP32 format and parses the partition table
+3. Language: **Xtensa:LE:32:default**
+4. Let auto-analysis run (~60 seconds, produces ~9,200 functions)
 
-## Step 3: Set Up Ghidra MCP Server
+### Verify Proper Import
+
+After import, you should see proper segments:
+- `app_DROM0_3f400020` — flash-mapped read-only data (strings live here)
+- `app_IRAM0_40080000` — fast IRAM code
+- `app_IRAM0_400d0020` — flash-mapped code (main application)
+- `.text` — ROM code
+- Various `.bss_*` segments for BSS data
+
+If you only see a single `ram:` segment, the flash loader didn't work.
+
+## Step 3: Set Up Ghidra MCP
 
 ### Install bethington/ghidra-mcp
 
 ```bash
 git clone https://github.com/bethington/ghidra-mcp.git
 cd ghidra-mcp
-
-# Linux
-./ghidra-mcp-setup.sh --deploy --ghidra-path /path/to/ghidra_12.0.3_PUBLIC
-
-# Install Python dependencies
+./ghidra-mcp-setup.sh --deploy --ghidra-path /path/to/ghidra
 pip install -r requirements.txt
 ```
 
-### Enable in Ghidra
+### Enable and Start
 
-1. Launch Ghidra, open your project with the FP2 firmware
-2. File → Configure → check GhidraMCP
-3. Tools → GhidraMCP → Start MCP Server
-4. Verify: `curl http://127.0.0.1:8089/check_connection`
+1. In Ghidra: `File → Configure → Configure All Plugins → GhidraMCP` (check it)
+2. `Tools → GhidraMCP → Start MCP Server`
+3. The server binds to a Unix domain socket at
+   `/run/user/1000/ghidra-mcp/ghidra-<pid>.sock`
 
 ### Configure Claude Code
 
-Add to your MCP settings (project `.mcp.json` or `~/.claude.json`):
-
-```json
-{
-  "mcpServers": {
-    "ghidra-mcp": {
-      "command": "python",
-      "args": ["/absolute/path/to/ghidra-mcp/bridge_mcp_ghidra.py"]
-    }
-  }
-}
+```bash
+claude mcp add ghidra-mcp /path/to/ghidra-mcp/.venv/bin/python /path/to/ghidra-mcp/bridge_mcp_ghidra.py
 ```
 
-The bridge uses stdio transport (Claude Code default) and connects to Ghidra's
-HTTP server at `127.0.0.1:8089`.
+The bridge auto-discovers UDS sockets. All 193 tools become available.
 
-Optional environment variables (`.env` file in ghidra-mcp directory):
-```
-GHIDRA_HOST=127.0.0.1
-GHIDRA_PORT=8089
-MCP_TIMEOUT=30
-SCRIPT_TIMEOUT=1800
-```
+### Headless Server Setup
 
-### MCP Capabilities
+For servers without a display:
 
-The bethington/ghidra-mcp server provides **193 tools** including:
+```bash
+# Install Xvfb and a desktop
+sudo pacman -S xorg-server-xvfb xfce4 x11vnc
 
-- Function listing, searching, decompilation (standard + forced)
-- Cross-references (bidirectional + bulk)
-- Call graph analysis
-- Memory and data segment enumeration
-- Data type/struct creation and modification
-- Byte pattern search
-- Function documentation export/import
-- SHA-256 function hashing for cross-version matching
-- Completeness scoring for analysis progress
+# Start virtual display + desktop + VNC
+Xvfb :1 -screen 0 1920x1080x24 -nolisten tcp &
+DISPLAY=:1 startxfce4 &
+x11vnc -display :1 -forever -nopw -listen 0.0.0.0 &
 
-## Step 4: Apply Function Identification (FIDB)
-
-Most of the firmware is ESP-IDF SDK code. FIDB auto-identifies these functions
-so you can focus on Aqara's custom code.
-
-### Determine ESP-IDF Version
-
-Check the UART boot log (serial output during stock firmware boot) for a line
-like:
-```
-I (25) boot: ESP-IDF v5.x.x 2nd stage bootloader
+# Launch Ghidra
+DISPLAY=:1 /path/to/ghidraRun &
 ```
 
-Or look for version strings in the firmware binary.
+Connect via VNC to configure the plugin, then Claude Code connects via MCP.
 
-### Create FIDB (One-Time)
+## Step 4: Analysis Targets
 
-1. Clone the matching ESP-IDF version:
-   ```bash
-   git clone -b v5.x.x --recursive https://github.com/espressif/esp-idf.git
-   ```
-2. Compile multiple example projects with `-Os` and `-O2` optimizations
-3. Import all compiled ELFs into a Ghidra project
-4. Auto-analyze each
-5. Tools → Function ID → Create New Empty FIDB → Populate from Programs
-6. Architecture: `Xtensa:LE:32:default`
+### Completed: Light Sensor Driver
 
-### Apply FIDB
+**Status: SOLVED** — TI OPT3001 at I2C address 0x44. Driver implemented.
 
-1. Tools → Function ID → Attach Existing FIDB → select your `.fidb` file
-2. Run Auto Analyze with "Function ID" analyzer enabled
-3. Thousands of SDK functions will be identified automatically
+Key findings from RE:
+- Source: `apps/user/hal/acceleration_ambinent_light.c`
+- `FUN_400e8d24` — OPT3001 init: writes config to register 1
+- `FUN_400e8d5c` — da218B init: `0x0E` to reg `0x11`, `0x40` to reg `0x0F`
+- `FUN_400e8f8c` — Calibration init: reads NVS coefficients (lux_low_k/b, etc.)
+- `FUN_400e8d84` — Lux getter: reads structure offset +8
+- Calibration: linear k/b coefficients per range, stored in NVS
 
-## Step 5: Analysis Targets
+### Priority 1: Radar OTA (XMODEM)
 
-### Priority 1: Light Sensor Driver
+**Status: MECHANISM UNDERSTOOD, implementation pending**
 
-The stock firmware reads an ambient light sensor and exposes it via HomeKit.
-The sensor is likely an I2C device sharing the bus with the accelerometer
-(GPIO32=SCL, GPIO33=SDA).
+Key findings from RE:
+- Source: `apps/user/ota/radar_ota.c` and `apps/user/ota/xmodem.c`
+- `mcu_ota` partition: 4MB at offset 0x433000, sub_type 0xFE
+- SubID `0x0127` (ota_set_flag) triggers radar bootloader mode
+- Transfer uses XMODEM with retry, CAN, and timeout support
+- Functions: `radar_ota_start`, `xmodem_new`, `xmodem_transfer`, `xmodem_end`
+- String addresses in Ghidra: `3f40b229` (radar_ota.c), `3f40b30c` (start),
+  `3f40b3c0` (xmodem functions)
 
-**Search strategy:**
-- Find I2C transactions to addresses other than 0x27 (accelerometer)
-- Search for references to `i2c_master_cmd_begin`, `i2c_master_write_byte`,
-  or the new `i2c_master_transmit` API
-- Look for string references: "lux", "light", "illumin", "ambient"
-- Check for ADC reads on channels 4/5/7 (GPIO32/33/35)
-- Find the HomeKit characteristic handler for IID 0x0A72
-  (Current Ambient Light Level)
+**Next steps**: Decompile `radar_ota_start` to get the exact sequence — what
+command puts the radar in bootloader mode, XMODEM parameters, completion signal.
 
-**Expected findings:**
-- I2C address of the light sensor IC
-- Initialization sequence (register writes)
-- Read command and data format
-- Conversion formula (raw ADC/I2C value → lux)
+### Priority 2: Unknown SubID Data Formats
 
-### Priority 2: Radar OTA / SOP Pin Control
+Several SubIDs have unknown data types. The stock firmware handlers reveal them.
 
-The stock firmware can update the radar's TI IWR6843AOP firmware via the
-Aqara app. Understanding this enables radar OTA from ESPHome.
-
-**Search strategy:**
-- Find references to SubID 0x0127 (`OTA_SET_FLAG`)
-- Search for GPIO configurations beyond the known pin map — unknown GPIOs
-  may control the radar's SOP (Sense-On-Power) pins
-- Look for TI BSL (Bootstrap Loader) protocol implementation
-- Search for strings: "ota", "upgrade", "firmware", "bsl", "sop"
-- Find the firmware download handler (likely fetches from Aqara cloud URL)
-
-**Expected findings:**
-- Which GPIOs control the radar SOP pins (for bootloader mode)
-- The UART bootloader protocol sequence
-- Whether the radar firmware is stored in ESP32 flash or downloaded on-demand
-
-### Priority 3: Unknown SubID Data Formats
-
-Several SubIDs have unknown data types (marked `?` in the protocol docs).
-The stock firmware contains handlers for all of them.
-
-**Key targets:**
+**Approach**: Find the main UART report dispatcher in the stock firmware
+(equivalent to our `handle_report_()`). Each case/branch reveals the payload
+parsing for that SubID.
 
 | SubID | Name | What to find |
 |-------|------|-------------|
 | 0x0121 | FALL_DETECTION | Event structure, severity levels |
-| 0x0154 | TARGET_POSTURE | Posture enum values (standing/sitting/lying) |
+| 0x0154 | TARGET_POSTURE | Posture enum (standing/sitting/lying) |
 | 0x0159 | SLEEP_DATA | Sleep tracking data format |
-| 0x0161 | SLEEP_STATE | Sleep state enum (awake/light/deep/REM?) |
-| 0x0164 | REALTIME_PEOPLE | Difference from ONTIME (0x0165) |
+| 0x0161 | SLEEP_STATE | Sleep state enum (awake/light/deep?) |
+| 0x0164 | REALTIME_PEOPLE | Difference from ONTIME (0x0165) — seen in logs |
+| 0x0166 | REALTIME_COUNT | Also seen in logs as unhandled |
 | 0x0174 | WALK_DISTANCE_ALL | Distance data format and units |
 
-**Search strategy:**
-- Find the main UART report dispatcher (equivalent to our `handle_report_()`)
-- Each case/branch will reveal the payload parsing for that SubID
-- Cross-reference with the cloud upload handlers to understand data semantics
+### Priority 3: NVS Lux Calibration
+
+The stock firmware stores per-unit calibration coefficients in NVS:
+- `lux_low_k`, `lux_low_b` — low range slope/intercept
+- `lux_high_k`, `lux_high_b` — high range slope/intercept
+- `lux_low_min`, `lux_low_max`, `lux_high_min`, `lux_high_max` — range bounds
+
+The NVS partition has been extracted (`fp2_nvs.bin`). Reading these values and
+applying the calibration would improve lux accuracy.
 
 ### Priority 4: 0x03xx Attribute Range
 
-The code has commented-out reads for SubIDs 0x0302, 0x0303, 0x0305:
+Commented-out code references three attributes in the 0x03xx range:
 ```cpp
-// enqueue_read_((AttrId) 0x302); // Read radar flash ID attribute
-// enqueue_read_((AttrId) 0x303); // Read radar ID attribute
-// enqueue_read_((AttrId) 0x305); // Read radar calibration result attribute
+// enqueue_read_((AttrId) 0x302); // Read radar flash ID
+// enqueue_read_((AttrId) 0x303); // Read radar ID
+// enqueue_read_((AttrId) 0x305); // Read radar calibration result
 ```
 
-These may be in a different attribute space (radar system info vs detection
-config). The stock firmware likely reads these during initialization.
+These appear to be radar system information attributes.
+
+## Ghidra Analysis Tips
+
+### Finding Functions by String Reference
+
+Strings in the FP2 firmware live in `app_DROM0_3f400020`. To find the function
+that uses a string:
+
+1. `search_strings` to find the string address
+2. `get_xrefs_to` on that address — returns the referencing function
+3. `decompile_function` on the function address
+
+### Byte Pattern Search for Strings
+
+If `search_strings` doesn't find a string (e.g., not defined as a string type),
+search for the raw bytes:
+
+```
+# "lux_low_k" = 6c 75 78 5f 6c 6f 77 5f 6b
+search_byte_patterns pattern="6c 75 78 5f 6c 6f 77"
+```
+
+Then find references to that address using literal pool searches.
+
+### Xtensa Literal Pools
+
+Xtensa uses `l32r` instructions to load 32-bit values from a literal pool. The
+literal pool entries appear as 4-byte little-endian addresses in memory, usually
+just before the function that uses them. Search for the address bytes in
+little-endian order:
+
+```
+# To find code referencing address 3f40b9d8:
+search_byte_patterns pattern="d8 b9 40 3f"
+```
 
 ## Reference Resources
 
 ### ESP32 Reverse Engineering
 
-- [BlackVS/ESP32-reversing](https://github.com/BlackVS/ESP32-reversing) —
-  curated resource list (architecture docs, tools, exploits)
-- [wilco375/ESP-Firmware-Toolbox](https://github.com/wilco375/ESP-Firmware-Toolbox) —
-  complete RE toolkit (dump, analyze, patch) from OrangeCon 2025
-- [Tarlogic FIDB guide](https://www.tarlogic.com/blog/esp32-firmware-using-ghidra-fidb/) —
-  function identification walkthrough
-- [Xtensa ISA Reference](https://0x04.net/~mwk/doc/xtensa.pdf) — instruction
-  set manual
+- [BlackVS/ESP32-reversing](https://github.com/BlackVS/ESP32-reversing) — curated resource list
+- [wilco375/ESP-Firmware-Toolbox](https://github.com/wilco375/ESP-Firmware-Toolbox) — complete RE toolkit
+- [Tarlogic FIDB guide](https://www.tarlogic.com/blog/esp32-firmware-using-ghidra-fidb/) — function identification
 
 ### Ghidra Extensions
 
 | Extension | URL | Purpose |
 |-----------|-----|---------|
-| ghidra-esp32-flash-loader | [dynacylabs](https://github.com/dynacylabs/ghidra-esp32-flash-loader) | Load ESP32 flash dumps directly |
+| ghidra-esp32-flash-loader | [dynacylabs](https://github.com/dynacylabs/ghidra-esp32-flash-loader) | Load ESP32 flash dumps (required) |
 | GhidraSVD | [antoniovazquezblanco](https://github.com/antoniovazquezblanco/GhidraSVD) | Import SVD peripheral maps |
 | ESP32 SVD files | [espressif/svd](https://github.com/espressif/svd) | Official peripheral definitions |
 
 ### FP2-Specific RE
 
-- [hansihe/AqaraPresenceSensorFP2ReverseEngineering](https://github.com/hansihe/AqaraPresenceSensorFP2ReverseEngineering) —
-  UART protocol, board schematic, GPIO map
-- [niceboygithub/AqaraPresenceSensorFP2](https://github.com/niceboygithub/AqaraPresenceSensorFP2) —
-  hardware details, esptool commands, partition layout
+- [hansihe/AqaraPresenceSensorFP2ReverseEngineering](https://github.com/hansihe/AqaraPresenceSensorFP2ReverseEngineering) — UART protocol, board schematic, GPIO map
+- [niceboygithub/AqaraPresenceSensorFP2](https://github.com/niceboygithub/AqaraPresenceSensorFP2) — hardware details, esptool commands
 
 ### MCP Server
 
-- [bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp) — 193-tool
-  MCP server for Claude-assisted Ghidra analysis
+- [bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp) — 193-tool MCP server for Claude-assisted Ghidra analysis

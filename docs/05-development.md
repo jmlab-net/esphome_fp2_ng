@@ -142,22 +142,53 @@ uint16_t row_val = (grid[row * 2] << 8) | grid[row * 2 + 1];
 bool active = (row_val & (1 << (15 - col))) != 0;
 ```
 
+## I2C Bus Sharing Pattern
+
+The accelerometer (da218B, 0x27) and light sensor (OPT3001, 0x44) share the
+same I2C bus on GPIO32/33. On the single-core ESP32:
+
+- Both devices are accessed from a single FreeRTOS task (`accel_task_`)
+- A 5ms `vTaskDelay` separates the accelerometer read from the OPT3001 read
+- On `ESP_ERR_INVALID_STATE` or `ESP_ERR_TIMEOUT`, the bus is reset with
+  `i2c_master_bus_reset(bus_handle_)`
+- The OPT3001 is read every 10th cycle (~1s) to avoid excessive bus traffic
+- Lux values are cached in a mutex-protected variable and published from the
+  main ESPHome loop (sensor publish is not thread-safe)
+
+The ESP-IDF `i2c_master` API (new in 5.5+) uses `i2c_master_bus_handle_t` and
+`i2c_master_dev_handle_t` — each device gets its own handle on the shared bus.
+Use `i2c_master_transmit_receive()` for register reads (not `i2c_master_receive`
+which skips the register address write).
+
 ## Known Limitations and Future Work
 
 ### Not Yet Implemented
 
-- **Fall detection events**: Sensitivity is configurable but fall events are not
-  processed or exposed as entities
-- **Sleep zone**: `SLEEP_MOUNT_POSITION` and `SLEEP_ZONE_SIZE` attributes are
-  defined but unused
-- **Dwell time / walking distance**: Attributes defined, explicitly disabled
-  during init
-- **Radar firmware update**: No OTA mechanism for the IWR6843AOP firmware
-- **Light sensor**: Hardware exists (3 analog pins) but sensor IC and protocol
-  are unknown
+- **Radar firmware OTA**: The mechanism is understood (XMODEM over UART,
+  triggered by SubID 0x0127), but not yet implemented. The `mcu_ota` partition
+  contains the radar firmware. See [03-firmware.md](03-firmware.md).
+- **Fall detection events**: Sensitivity is configurable but fall events (SubID
+  0x0121) are not processed or exposed as entities
+- **Sleep monitoring**: 6 SubIDs (0x0156-0x0176) for sleep tracking — data
+  formats not yet decoded from firmware RE
+- **Posture reporting**: SubID 0x0154 (target posture) and 0x0157 (enable) —
+  could expose standing/sitting/lying state
+- **Real-time people count**: SubIDs 0x0164 and 0x0166 are reported by the radar
+  (seen in logs as "Unhandled report") but not exposed
+- **Walking distance**: SubID 0x0174 — data format unknown
+- **Dwell time**: SubID 0x0172 — currently disabled during init
+- **NVS lux calibration**: The stock firmware reads calibration coefficients
+  (lux_low_k/b, lux_high_k/b) from NVS. Our OPT3001 driver reads raw values
+  without calibration. Accuracy is good but could be improved.
 - **Accelerometer calibration**: `calculate_calibration()` computes corrections
-  but the function is never called from the main loop. A calibration trigger
-  mechanism is needed.
+  but is never called. A calibration trigger mechanism is needed.
+
+### Resolved (Previously Listed)
+
+- ~~Light sensor unknown~~ — Identified as TI OPT3001 at I2C 0x44. Fully
+  implemented.
+- ~~Radar firmware update unknown~~ — Uses XMODEM over UART. Mechanism
+  understood, implementation pending.
 
 ### Architecture Considerations
 
@@ -174,6 +205,11 @@ bool active = (row_val & (1 << (15 - col))) != 0;
   configured, location reporting is auto-enabled and cannot be disabled via the
   switch. This is intentional — the count depends on tracking data — but should
   be documented clearly to users.
+
+- **Edge grid required for global presence**: The radar does not send global
+  presence/motion reports (0x0103, 0x0104) unless an edge grid is configured.
+  Without it, the radar tracks targets but doesn't trigger binary presence.
+  Users should always configure a full-coverage `edge_grid`.
 
 ## UART Sniffing (for Protocol Research)
 

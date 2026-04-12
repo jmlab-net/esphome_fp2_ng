@@ -5,14 +5,20 @@
 The project provides two ESPHome external components:
 
 - **`aqara_fp2`** — main radar UART communication and entity management
-- **`aqara_fp2_accel`** — accelerometer driver for orientation detection
+- **`aqara_fp2_accel`** — accelerometer + OPT3001 light sensor driver
 
 ## Component Architecture
 
 ```
-__init__.py          Python config schema and code generation
-fp2_component.h      C++ header — types, enums, class declaration
-fp2_component.cpp    C++ implementation — protocol, state machine, handlers
+aqara_fp2/
+  __init__.py          Python config schema and code generation
+  fp2_component.h      C++ header — types, enums, class declaration
+  fp2_component.cpp    C++ implementation — protocol, state machine, handlers
+
+aqara_fp2_accel/
+  __init__.py          Python config schema
+  aqara_fp2_accel.h    C++ header — accel + OPT3001
+  aqara_fp2_accel.cpp  C++ implementation — I2C, orientation, lux
 ```
 
 ### Key Classes
@@ -23,8 +29,11 @@ fp2_component.cpp    C++ implementation — protocol, state machine, handlers
   grid bitmap, sensitivity, and pointers to presence/motion/count sensors.
 - **`FP2LocationSwitch`** — switch entity to enable/disable target location
   reporting.
-- **`AqaraFP2Accel`** — accelerometer component running on a dedicated FreeRTOS
-  task for non-blocking I2C reads.
+- **`FP2CalibrateEdgeButton`** — button entity to trigger edge auto-calibration.
+- **`FP2CalibrateInterferenceButton`** — button entity to trigger interference
+  auto-calibration.
+- **`AqaraFP2Accel`** — accelerometer + light sensor component running on a
+  dedicated FreeRTOS task for non-blocking I2C reads.
 
 ## UART State Machine
 
@@ -65,6 +74,8 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `people_count` | sensor | measurement | Total person count (from SubID 0x0165) |
 | `target_tracking` | text_sensor | diagnostic | Base64-encoded target data (from SubID 0x0117) |
 | `location_report_switch` | switch | — | Enable/disable location tracking reports |
+| `calibrate_edge` | button | diagnostic | Trigger edge boundary auto-calibration |
+| `calibrate_interference` | button | diagnostic | Trigger interference auto-calibration |
 | `radar_temperature` | sensor | temperature | Radar chip temperature in Celsius |
 | `radar_software_version` | text_sensor | diagnostic | Radar firmware version |
 | `mounting_position_sensor` | text_sensor | diagnostic | Current mount position string |
@@ -77,6 +88,12 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `motion` | binary_sensor | motion | Zone motion (from SubID 0x0115) |
 | `zone_people_count` | sensor | measurement | People count in zone (derived from 0x0117 targets) |
 | `zone_map_sensor` | text_sensor | diagnostic | Zone grid as hex string |
+
+### Accelerometer / Light Sensor
+
+| Config Key | Entity Type | Class | Description |
+|------------|-------------|-------|-------------|
+| `light_sensor` | sensor | illuminance | OPT3001 ambient light (lux) |
 
 ### Grid Diagnostic Sensors
 
@@ -105,6 +122,34 @@ col = int((-raw_x + 400) / 800.0 * 14.0) + 2  // offset_col = 2
 row = int(raw_y / 800.0 * 14.0)                 // offset_row = 0
 ```
 
+## Auto-Calibration
+
+Two button entities trigger the radar's built-in auto-detection:
+
+- **`calibrate_edge`** — writes `EDGE_AUTO_ENABLE` (0x0150) = true. The radar
+  scans the environment and sends back `EDGE_AUTO_SET` (0x0149) with the detected
+  room boundary grid. The component stores the grid, applies it to the radar,
+  and updates the card diagnostic sensor.
+
+- **`calibrate_interference`** — writes `INTERFERENCE_AUTO_ENABLE` (0x0139) = true.
+  The radar identifies interference sources and sends back
+  `INTERFERENCE_AUTO_SET` (0x0125) with the detected interference grid.
+
+## OPT3001 Light Sensor
+
+The OPT3001 ambient light sensor shares the I2C bus with the accelerometer:
+
+- **Address**: 0x44
+- **Mode**: Continuous conversion, 800ms, automatic full-scale range
+- **Config register**: 0xCE10
+- **Read rate**: Every ~1 second (10th cycle of the 100ms accel task)
+- **Publish**: From the ESPHome main loop (thread-safe via mutex). Only publishes
+  on >5% change to avoid flooding HA.
+- **Bus contention**: 5ms yield between accel and OPT3001 reads. Automatic
+  `i2c_master_bus_reset()` on timeout/invalid-state errors.
+- **I2C bus scan**: Runs during `dump_config()` and logs all devices found on
+  the bus (diagnostic).
+
 ## Configuration Reference
 
 ### Minimal Config
@@ -123,6 +168,8 @@ external_components:
 
 aqara_fp2_accel:
   id: fp2_accel
+  light_sensor:
+    name: "Ambient Light"
 
 aqara_fp2:
   id: fp2
@@ -136,9 +183,14 @@ aqara_fp2:
       name: "Presence"
 ```
 
-### Full Config with Zone Counting
+### Full Config with All Features
 
 ```yaml
+aqara_fp2_accel:
+  id: fp2_accel
+  light_sensor:
+    name: "Ambient Light"
+
 aqara_fp2:
   id: fp2
   accel: fp2_accel
@@ -159,22 +211,28 @@ aqara_fp2:
   location_report_switch:
     name: "Report Targets"
 
-  # Optional grids (14x14, X=active, .=inactive)
-  interference_grid: |-
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
-    ..............
+  # Auto-calibration buttons
+  calibrate_edge:
+    name: "Calibrate Room Boundaries"
+  calibrate_interference:
+    name: "Calibrate Interference"
+
+  # Edge grid (tells radar where the room boundaries are)
+  edge_grid: |-
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
+    XXXXXXXXXXXXXX
 
   # Global presence/motion
   global_zone:
@@ -209,28 +267,6 @@ aqara_fp2:
         name: "Bed Motion"
       zone_people_count:
         name: "Bed People Count"
-
-    - id: desk_zone
-      grid: |-
-        ..............
-        ..............
-        ..............
-        ..............
-        ..............
-        ..............
-        ..............
-        ..............
-        ........XXXX..
-        ........XXXX..
-        ........XXXX..
-        ..............
-        ..............
-        ..............
-      presence_sensitivity: medium
-      presence:
-        name: "Desk Presence"
-      zone_people_count:
-        name: "Desk People Count"
 ```
 
 ### Required ESP32 Config
@@ -273,10 +309,15 @@ The `aqara_fp2_accel` component runs on a dedicated FreeRTOS task to avoid
 blocking the main ESPHome loop with I2C operations.
 
 - **I2C bus**: GPIO32 (SCL), GPIO33 (SDA), 400kHz
-- **Device address**: 0x27 (MiraMEMS da218B)
+- **Accelerometer**: da218B at address 0x27
+- **Light sensor**: OPT3001 at address 0x44 (same bus)
 - **Sample rate**: 10 samples averaged, configurable interval (default 100ms)
-- **Outputs**: Orientation enum (UP, DOWN, SIDE, etc.), tilt angle, vibration state
-- **Thread safety**: All public accessors use FreeRTOS mutexes
+- **Outputs**: Orientation enum (UP, DOWN, SIDE, etc.), tilt angle, vibration
+  state, ambient light (lux)
+- **Thread safety**: All public accessors use FreeRTOS mutexes. Sensor publish
+  happens from the main loop, not the task.
+- **I2C bus scan**: Runs during `dump_config()` phase, logs all discovered devices
+  with candidate identifications.
 
 The radar periodically queries the ESP32 for orientation and angle data via
 reverse-read requests (SubIDs 0x0143, 0x0120). The accelerometer component

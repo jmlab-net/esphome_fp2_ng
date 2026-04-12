@@ -2,6 +2,62 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-12 — OPT3001 Light Sensor, Auto-Calibration, I2C Fixes
+
+### New Features
+
+- **OPT3001 ambient light sensor**: Identified as TI OPT3001 at I2C address
+  0x44 via I2C bus scan diagnostic. Driver reads lux every ~1s in continuous
+  mode (800ms conversion, auto-range). Publishes on >5% change.
+  Config: `light_sensor: name: "Ambient Light"` under `aqara_fp2_accel`.
+
+- **Auto-calibration buttons**: Added `calibrate_edge` and
+  `calibrate_interference` button entities. Pressing triggers
+  `EDGE_AUTO_ENABLE` / `INTERFERENCE_AUTO_ENABLE` on the radar. Handlers
+  receive the auto-detected grids, store them, apply to radar, and update
+  card diagnostic sensors.
+
+- **Complete SubID enum**: Added all 22 previously missing SubIDs from the
+  protocol RE (43 total). Organized by category: system, detection, config,
+  grids, auto-calibration, tracking, counting, posture, fall detection,
+  sleep monitoring, temperature.
+
+- **I2C bus scan diagnostic**: Scans all I2C addresses during `dump_config()`
+  and logs found devices with candidate identifications. Runs after API
+  connects so results appear in ESPHome logs (not just serial).
+
+### Bug Fixes
+
+- **I2C bus contention**: Added 5ms yield between accelerometer and OPT3001
+  reads. Added `i2c_master_bus_reset()` on `INVALID_STATE`/`TIMEOUT` errors
+  to recover the bus. Suppressed noisy warning logs for recoverable errors.
+
+- **I2C bus scan timing**: Moved scan from `setup()` to `dump_config()` so
+  results appear in API logs. Accel FreeRTOS task is suspended during scan
+  to prevent contention.
+
+### Documentation
+
+- **Firmware analysis guide** (07-firmware-analysis.md): Complete RE workflow
+  using Ghidra + bethington/ghidra-mcp + dynacylabs ESP32 flash loader.
+
+- **Full protocol reference**: Updated 02-uart-protocol.md with all 43 known
+  SubIDs and implementation status (Y/P/N).
+
+### RE Discoveries (from stock firmware analysis)
+
+- **Light sensor IC**: TI OPT3001 at I2C 0x44. Stock firmware source file:
+  `apps/user/hal/acceleration_ambinent_light.c`. Uses NVS-stored calibration
+  coefficients (lux_low_k/b, lux_high_k/b).
+
+- **Radar OTA mechanism**: Uses XMODEM protocol over existing UART, NOT SOP
+  pin toggling. Firmware stored in `mcu_ota` partition (4MB, sub_type 0xFE).
+  SubID 0x0127 triggers bootloader mode. Source files: `radar_ota.c`,
+  `xmodem.c`. Not yet implemented in ESPHome.
+
+- **Full partition table**: nvs, otadata, phy_init, aqara_fw1 (2MB),
+  aqara_fw2 (2MB), test (76KB), mcu_ota (4MB), fctry (24KB).
+
 ## 2026-04-11 — Initial Fork
 
 ### Bug Fixes
