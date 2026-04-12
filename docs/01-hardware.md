@@ -44,9 +44,11 @@ Aqara internal project path: `Embedded_esp32_hsfp2`
 
 ### ESP32-WROOM-32U (Main Processor)
 
-- **Variant**: ESP32-SOLO1 (single-core)
-- **Flash**: 16Mbit SPI (external)
-- **PSRAM**: Yes
+- **Variant**: ESP32-SOLO1 (single-core), chip revision v1.1
+- **Flash**: 16Mbit SPI (external), part number unknown
+- **PSRAM**: AP Memory 1604M-3SQR present on GPIO16 (CS). Not used by
+  application firmware (no SPIRAM API calls found in RE). May be reserved
+  for future use or factory testing.
 - **WiFi**: 802.11 b/g/n via U.FL external antenna
 - **Role**: Runs application firmware (HomeKit, WiFi, cloud comms). Receives
   processed target data from the radar chip over UART and decides what to expose
@@ -107,22 +109,39 @@ esp32:
 - **Source file**: `apps/user/hal/acceleration_ambinent_light.c`
 - **Status**: Fully implemented in ESPHome component
 
+### RGB LED
+
+- **Pins**: GPIO14 (Blue), GPIO26 (Red), GPIO27 (Green), active-low
+- **Driver**: ESP32 LEDC peripheral (PWM) for brightness control
+- **Functions**: `led_rgb`, `led_scene`, `led_scene_deal`, `led_onoff_callback`
+- **Light-linked**: The LED brightness is tied to the ambient light sensor via
+  `lux_acc_led_onoff` — stock firmware adjusts LED based on room brightness
+- **ESPHome**: Only GPIO27 is used as a status LED. GPIO14 and GPIO26 are
+  available for custom use.
+
 ## GPIO Pin Map
 
 | GPIO | Function | Direction | Notes |
 |------|----------|-----------|-------|
+| 0 | Boot mode | Input | TP28, pull-up. Hold LOW for download mode |
+| 1 | UART0 TX | Output | Debug/log serial (115200 baud) |
+| 3 | UART0 RX | Input | Debug/log serial |
 | 13 | Radar NRESET | Output | Active-low reset for IWR6843AOP |
-| 14 | RGB LED (Blue) | Output | Accent LED, active-low |
-| 16 | External SRAM CS | Output | AP Memory 1604M-3SQR |
+| 14 | RGB LED (Blue) | Output | LEDC PWM, active-low |
+| 16 | External SRAM CS | Output | AP Memory 1604M-3SQR (unused by app) |
 | 18 | UART TX to Radar | Output | ESP32 → IWR6843AOP (890000 baud) |
 | 19 | UART RX from Radar | Input | IWR6843AOP → ESP32 |
-| 26 | RGB LED (Red) | Output | Status LED, active-low |
-| 27 | RGB LED (Green) | Output | Status LED, active-low |
-| 32 | I2C SCL | Bidirectional | da218B accelerometer + OPT3001 light sensor |
-| 33 | I2C SDA | Bidirectional | da218B accelerometer + OPT3001 light sensor |
+| 26 | RGB LED (Red) | Output | LEDC PWM, active-low |
+| 27 | RGB LED (Green) | Output | LEDC PWM, active-low |
+| 32 | I2C SCL | Bidirectional | da218B (0x27) + OPT3001 (0x44), 400kHz |
+| 33 | I2C SDA | Bidirectional | da218B (0x27) + OPT3001 (0x44), 400kHz |
 | 34 | Accelerometer INT | Input | da218B interrupt line |
 | 35 | Light Sensor INT | Input | OPT3001 interrupt (input-only GPIO) |
 | 36 (VP) | User Button | Input | Active-low, bottom of device |
+
+GPIOs 2, 4, 5, 12, 15, 17, 21, 22, 23, 25 are not mapped in the RE work or
+board schematic. They are likely unused/floating or connected to internal
+test points. Physical probing would be needed to confirm.
 
 ## Flash Partition Table
 
@@ -161,6 +180,46 @@ The IWR6843AOP can be updated two ways:
 2. **Direct flash programming (secondary)**: The P2 8-pin test header provides
    direct QSPI access to the radar's WinBond flash. There is also an unpopulated
    10-pin FFC for LVDS raw radar data output.
+
+## Stock Firmware Details (from RE)
+
+Extracted from the app descriptor and firmware strings:
+
+| Field | Value |
+|-------|-------|
+| Model ID | `lumi.motion.agl001` |
+| Manufacturer | `aqara` |
+| ESP32 App Version | `4.66.85` |
+| Build Date | Jul 8, 2025 at 17:49:32 |
+| ESP-IDF | Custom fork, git hash `b48ac7fc-dirty` (not a standard release) |
+| Developer | `zengzhaoze` (from source paths) |
+| HomeKit SDK | Apple HomeKit ADK (`apple-homekit-adk/`) |
+| Chip Revision | ESP32 v1.1 |
+
+### Source File Structure (from firmware strings)
+
+```
+Embedded_esp32_hsfp2/
+├── apps/
+│   ├── master/master.c                        # Main application entry
+│   ├── user/
+│   │   ├── hal/acceleration_ambinent_light.c  # Accel + OPT3001 driver
+│   │   └── ota/
+│   │       ├── ota.c                          # ESP32 OTA handler
+│   ��       ├── radar_ota.c                    # Radar OTA orchestration
+│   │       └── xmodem.c                       # XMODEM protocol
+│   └── homekit/port/src/
+│       └── HAPPlatformLog.c                   # HomeKit platform layer
+├── apple-homekit-adk/                          # Apple HAP SDK
+│   ├── HAP/
+│   │   ├── HAPDeviceID.c
+│   │   └── HAPPairingPairVerify.c
+│   └── PAL/POSIX/
+│       └── HAPPlatformMutex.c
+└── IDF/components/                             # ESP-IDF (custom fork)
+    ├── driver/i2c.c
+    └── hal/esp32/include/hal/i2c_ll.h
+```
 
 ## Physical Construction
 
