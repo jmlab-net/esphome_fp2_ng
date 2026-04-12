@@ -39,6 +39,99 @@ bool AqaraFP2Accel::i2c_init_bus() {
   return true;
 }
 
+// --- OPT3001 Light Sensor ---
+
+bool AqaraFP2Accel::opt3001_init_() {
+  // Add OPT3001 as a second device on the I2C bus
+  i2c_device_config_t dev_conf = {};
+  dev_conf.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  dev_conf.device_address = OPT3001_ADDR;
+  dev_conf.scl_speed_hz = frequency_;
+
+  esp_err_t err = i2c_master_bus_add_device(bus_handle_, &dev_conf, &opt3001_handle_);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "OPT3001: failed to add I2C device: %s", esp_err_to_name(err));
+    return false;
+  }
+
+  // Verify manufacturer ID (should be 0x5449 = "TI")
+  uint16_t mfr_id = 0;
+  if (!opt3001_read_reg_(OPT3001_REG_MANUFACTURER_ID, &mfr_id)) {
+    ESP_LOGE(TAG, "OPT3001: failed to read manufacturer ID");
+    return false;
+  }
+  ESP_LOGI(TAG, "OPT3001: Manufacturer ID = 0x%04X %s", mfr_id,
+           mfr_id == 0x5449 ? "(TI - correct)" : "(unexpected!)");
+
+  // Verify device ID (should be 0x3001)
+  uint16_t dev_id = 0;
+  if (!opt3001_read_reg_(OPT3001_REG_DEVICE_ID, &dev_id)) {
+    ESP_LOGE(TAG, "OPT3001: failed to read device ID");
+    return false;
+  }
+  ESP_LOGI(TAG, "OPT3001: Device ID = 0x%04X %s", dev_id,
+           dev_id == 0x3001 ? "(OPT3001 - correct)" : "(unexpected!)");
+
+  // Configure: automatic full-scale, 800ms conversion, continuous mode
+  // Config = 0xCE10:
+  //   [15:12] = 0xC (automatic range)
+  //   [11]    = 1 (800ms conversion time)
+  //   [10:9]  = 1,1 (continuous conversion)
+  //   [8:5]   = 0000
+  //   [4]     = 1 (latch interrupt)
+  //   [3:0]   = 0000
+  uint16_t config = 0xCE10;
+  if (!opt3001_write_reg_(OPT3001_REG_CONFIG, config)) {
+    ESP_LOGE(TAG, "OPT3001: failed to write config");
+    return false;
+  }
+
+  ESP_LOGI(TAG, "OPT3001: initialized successfully (continuous mode, 800ms, auto-range)");
+  opt3001_initialized_ = true;
+  return true;
+}
+
+bool AqaraFP2Accel::opt3001_read_reg_(uint8_t reg, uint16_t *value) {
+  uint8_t data[2];
+  esp_err_t err = i2c_master_transmit_receive(
+      opt3001_handle_, &reg, 1, data, 2, 1000);
+  if (err != ESP_OK) {
+    return false;
+  }
+  *value = ((uint16_t)data[0] << 8) | data[1];
+  return true;
+}
+
+bool AqaraFP2Accel::opt3001_write_reg_(uint8_t reg, uint16_t value) {
+  uint8_t buf[3] = {reg, (uint8_t)(value >> 8), (uint8_t)(value & 0xFF)};
+  esp_err_t err = i2c_master_transmit(opt3001_handle_, buf, 3, 1000);
+  return err == ESP_OK;
+}
+
+bool AqaraFP2Accel::opt3001_read_lux_(float *lux) {
+  uint16_t raw = 0;
+  if (!opt3001_read_reg_(OPT3001_REG_RESULT, &raw)) {
+    return false;
+  }
+
+  // Exponent = bits [15:12], Mantissa = bits [11:0]
+  // Lux = 0.01 * 2^exponent * mantissa
+  uint8_t exponent = (raw >> 12) & 0x0F;
+  uint16_t mantissa = raw & 0x0FFF;
+  *lux = 0.01f * (float)(1 << exponent) * (float)mantissa;
+  return true;
+}
+
+float AqaraFP2Accel::get_lux() const {
+  if (mutex_ == nullptr) return 0.0f;
+  xSemaphoreTake(mutex_, portMAX_DELAY);
+  float value = lux_value_;
+  xSemaphoreGive(mutex_);
+  return value;
+}
+
+// --- I2C Bus Scan ---
+
 void AqaraFP2Accel::i2c_bus_scan_() {
   ESP_LOGI(TAG, "=== I2C Bus Scan (SDA=%d, SCL=%d) ===", sda_pin_, scl_pin_);
 
@@ -78,6 +171,11 @@ void AqaraFP2Accel::setup() {
   // Initialize the accelerometer
   i2c_init_acc();
 
+  // Initialize OPT3001 light sensor
+  if (!opt3001_init_()) {
+    ESP_LOGW(TAG, "OPT3001 light sensor not available");
+  }
+
   // Create mutex for thread-safe access
   mutex_ = xSemaphoreCreateMutex();
   if (mutex_ == nullptr) {
@@ -106,6 +204,18 @@ void AqaraFP2Accel::setup() {
   }
 }
 
+void AqaraFP2Accel::loop() {
+  // Publish lux from main loop (sensor publish is not thread-safe)
+  if (opt3001_initialized_ && light_sensor_ != nullptr) {
+    float lux = get_lux();
+    // Only publish on meaningful change (>5% or crossing zero)
+    float last = light_sensor_->get_raw_state();
+    if (std::isnan(last) || std::abs(lux - last) > (last * 0.05f + 0.5f)) {
+      light_sensor_->publish_state(lux);
+    }
+  }
+}
+
 void AqaraFP2Accel::accel_task_(void *param) {
   AqaraFP2Accel *accel = static_cast<AqaraFP2Accel *>(param);
   accel->task_loop_();
@@ -117,6 +227,20 @@ void AqaraFP2Accel::task_loop_() {
   while (task_running_) {
     // Read and process accelerometer data
     read_process_accel();
+
+    // Read OPT3001 light sensor every 10th cycle (~1s at 100ms interval)
+    if (opt3001_initialized_) {
+      opt3001_read_counter_++;
+      if (opt3001_read_counter_ >= 10) {
+        opt3001_read_counter_ = 0;
+        float lux = 0.0f;
+        if (opt3001_read_lux_(&lux)) {
+          if (mutex_ != nullptr) xSemaphoreTake(mutex_, portMAX_DELAY);
+          lux_value_ = lux;
+          if (mutex_ != nullptr) xSemaphoreGive(mutex_);
+        }
+      }
+    }
 
     // Delay for the configured interval
     vTaskDelay(pdMS_TO_TICKS(update_interval_ms_));
@@ -162,6 +286,7 @@ void AqaraFP2Accel::dump_config() {
   ESP_LOGCONFIG(TAG, "  Calibration X: %d", accel_corr_x_);
   ESP_LOGCONFIG(TAG, "  Calibration Y: %d", accel_corr_y_);
   ESP_LOGCONFIG(TAG, "  Calibration Z: %d", accel_corr_z_);
+  ESP_LOGCONFIG(TAG, "  OPT3001 Light Sensor: %s", opt3001_initialized_ ? "YES" : "NO");
 
   // Run I2C bus scan during dump_config so results appear in API logs
   if (i2c_initialized_) {

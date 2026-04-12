@@ -1,5 +1,6 @@
 #pragma once
 
+#include "esphome/components/sensor/sensor.h"
 #include "esphome/core/component.h"
 #include <cstdint>
 #include <array>
@@ -13,8 +14,15 @@ namespace aqara_fp2_accel {
 
 static const char *const TAG = "aqara_fp2_accel";
 
-// I2C address for the accelerometer
+// I2C addresses
 static const uint8_t ACC_SENSOR_ADDR = 0x27;
+static const uint8_t OPT3001_ADDR = 0x44;
+
+// OPT3001 registers
+static const uint8_t OPT3001_REG_RESULT = 0x00;
+static const uint8_t OPT3001_REG_CONFIG = 0x01;
+static const uint8_t OPT3001_REG_MANUFACTURER_ID = 0x7E;
+static const uint8_t OPT3001_REG_DEVICE_ID = 0x7F;
 
 // Number of samples to buffer
 static const uint8_t ACC_SAMPLE_COUNT = 10;
@@ -67,7 +75,7 @@ struct AccelState {
 class AqaraFP2Accel : public Component {
  public:
   void setup() override;
-  void loop() override {}
+  void loop() override;
   void dump_config() override;
 
   float get_setup_priority() const override { return setup_priority::BUS; }
@@ -79,6 +87,10 @@ class AqaraFP2Accel : public Component {
 
   // Calibration
   bool calculate_calibration();
+
+  // Light sensor
+  float get_lux() const;
+  void set_light_sensor(sensor::Sensor *sensor) { light_sensor_ = sensor; }
 
   // Task configuration
   void set_update_interval(uint32_t interval_ms) { update_interval_ms_ = interval_ms; }
@@ -92,6 +104,12 @@ class AqaraFP2Accel : public Component {
   bool i2c_read_accel_xyz(int16_t *x, int16_t *y, int16_t *z);
   bool i2c_write_reg(uint8_t reg, uint8_t value);
   void i2c_init_acc();
+
+  // OPT3001 light sensor
+  bool opt3001_init_();
+  bool opt3001_read_lux_(float *lux);
+  bool opt3001_write_reg_(uint8_t reg, uint16_t value);
+  bool opt3001_read_reg_(uint8_t reg, uint16_t *value);
 
   // Data processing
   void read_process_accel();
@@ -134,6 +152,13 @@ class AqaraFP2Accel : public Component {
   uint8_t scl_pin_{32};
   uint32_t frequency_{400000};  // 400kHz
   bool i2c_initialized_{false};
+
+  // OPT3001 light sensor
+  i2c_master_dev_handle_t opt3001_handle_{nullptr};
+  bool opt3001_initialized_{false};
+  float lux_value_{0.0f};
+  uint8_t opt3001_read_counter_{0};
+  sensor::Sensor *light_sensor_{nullptr};
 
   // Static task function
   static void accel_task_(void *param);
