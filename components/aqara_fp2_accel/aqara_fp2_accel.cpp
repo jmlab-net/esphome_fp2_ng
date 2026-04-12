@@ -75,9 +75,6 @@ void AqaraFP2Accel::setup() {
     return;
   }
 
-  // Scan I2C bus for all devices (diagnostic)
-  i2c_bus_scan_();
-
   // Initialize the accelerometer
   i2c_init_acc();
 
@@ -165,6 +162,20 @@ void AqaraFP2Accel::dump_config() {
   ESP_LOGCONFIG(TAG, "  Calibration X: %d", accel_corr_x_);
   ESP_LOGCONFIG(TAG, "  Calibration Y: %d", accel_corr_y_);
   ESP_LOGCONFIG(TAG, "  Calibration Z: %d", accel_corr_z_);
+
+  // Run I2C bus scan during dump_config so results appear in API logs
+  if (i2c_initialized_) {
+    // Suspend the accel task during scan to avoid bus contention
+    if (task_handle_ != nullptr) {
+      vTaskSuspend(task_handle_);
+    }
+
+    i2c_bus_scan_();
+
+    if (task_handle_ != nullptr) {
+      vTaskResume(task_handle_);
+    }
+  }
 }
 
 bool AqaraFP2Accel::i2c_read_accel_xyz(int16_t *x, int16_t *y, int16_t *z) {
