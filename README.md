@@ -104,6 +104,9 @@ aqara_fp2:
   people_count:
     name: "Total People"
 
+  fall_detection:
+    name: "Fall Detected"
+
   radar_temperature:
     name: "Radar Temperature"
 
@@ -116,6 +119,12 @@ aqara_fp2:
   location_report_switch:
     name: "Report Targets"
 
+  calibrate_edge:
+    name: "Calibrate Room Boundaries"
+
+  calibrate_interference:
+    name: "Calibrate Interference"
+
   global_zone:
     presence_sensitivity: medium
     presence:
@@ -126,20 +135,20 @@ aqara_fp2:
   zones:
     - id: bed_zone
       grid: |-
-        ..............
-        ..............
-        ..XXXXXXXXXX..
-        ..XXXXXXXXXX..
-        ..XXXXXXXXXX..
-        ..XXXXXXXXXX..
-        ..............
-        ..............
-        ..............
-        ..............
-        ..............
-        ..............
-        ..............
-        ..............
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
+        XXXXXXXXXXXXXX
       presence_sensitivity: high
       presence:
         name: "Bed Presence"
@@ -147,6 +156,8 @@ aqara_fp2:
         name: "Bed Motion"
       zone_people_count:
         name: "Bed People Count"
+      posture:
+        name: "Bed Posture"
 
 binary_sensor:
   - platform: gpio
@@ -184,10 +195,13 @@ title: Bedroom FP2
 | Config Key | Type | Description |
 |------------|------|-------------|
 | `people_count` | sensor | Total detected person count |
+| `fall_detection` | binary_sensor | Fall detected (on/off) |
 | `global_zone.presence` | binary_sensor | Overall presence |
 | `global_zone.motion` | binary_sensor | Overall motion |
 | `target_tracking` | text_sensor | Base64 target data (diagnostic) |
 | `location_report_switch` | switch | Toggle location tracking |
+| `calibrate_edge` | button | Trigger room boundary auto-calibration |
+| `calibrate_interference` | button | Trigger interference auto-calibration |
 | `radar_temperature` | sensor | Radar chip temperature (diagnostic) |
 | `radar_software_version` | text_sensor | Radar firmware version (diagnostic) |
 
@@ -197,9 +211,14 @@ title: Bedroom FP2
 |------------|------|-------------|
 | `presence` | binary_sensor | Zone occupancy |
 | `motion` | binary_sensor | Zone motion |
-| `zone_people_count` | sensor | Number of people in zone |
+| `zone_people_count` | sensor | Number of people in zone (native radar counting) |
+| `posture` | text_sensor | Body posture: none, standing, sitting, lying |
 
-Zone people counting requires location tracking data. It is **automatically enabled** when any zone has a `zone_people_count` sensor configured.
+### Accelerometer / Light Sensor
+
+| Config Key | Type | Description |
+|------------|------|-------------|
+| `light_sensor` | sensor | OPT3001 ambient light (lux) |
 
 ## Zone Grid
 
