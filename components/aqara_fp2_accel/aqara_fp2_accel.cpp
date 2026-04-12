@@ -96,6 +96,9 @@ bool AqaraFP2Accel::opt3001_read_reg_(uint8_t reg, uint16_t *value) {
   esp_err_t err = i2c_master_transmit_receive(
       opt3001_handle_, &reg, 1, data, 2, 1000);
   if (err != ESP_OK) {
+    if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_TIMEOUT) {
+      i2c_master_bus_reset(bus_handle_);
+    }
     return false;
   }
   *value = ((uint16_t)data[0] << 8) | data[1];
@@ -228,6 +231,9 @@ void AqaraFP2Accel::task_loop_() {
     // Read and process accelerometer data
     read_process_accel();
 
+    // Yield between I2C devices to let the bus settle on single-core ESP32
+    vTaskDelay(pdMS_TO_TICKS(5));
+
     // Read OPT3001 light sensor every 10th cycle (~1s at 100ms interval)
     if (opt3001_initialized_) {
       opt3001_read_counter_++;
@@ -321,7 +327,13 @@ bool AqaraFP2Accel::i2c_read_accel_xyz(int16_t *x, int16_t *y, int16_t *z) {
   );
 
   if (err != ESP_OK) {
-    ESP_LOGW(TAG, "Failed to read accelerometer data: %s", esp_err_to_name(err));
+    // Recover the bus if it's stuck — common on single-core ESP32
+    // with two devices sharing the bus
+    if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_TIMEOUT) {
+      i2c_master_bus_reset(bus_handle_);
+    } else {
+      ESP_LOGW(TAG, "Failed to read accelerometer data: %s", esp_err_to_name(err));
+    }
     *x = 0;
     *y = 0;
     *z = 0;
