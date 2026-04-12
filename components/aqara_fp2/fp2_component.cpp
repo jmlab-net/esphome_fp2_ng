@@ -117,14 +117,11 @@ void FP2Component::check_initialization_() {
   }
 
   // Start init when we receive any valid frame from the radar.
-  // Previously waited for heartbeat (0x0102), but after OTA reboot
-  // the radar may have already passed its heartbeat phase.
-  if (last_heartbeat_millis_ > 0 || last_command_sent_millis_ > 0 ||
-      millis() > 15000) {
-    // Either: heartbeat received, or a command was already processed,
-    // or 15 seconds elapsed (radar must be alive if we got temperature reports)
-    ESP_LOGW(TAG, "*** Starting initialization (heartbeat=%u, cmd=%u, uptime=%u) ***",
-             last_heartbeat_millis_, last_command_sent_millis_, millis());
+  // The first frame (temperature, heartbeat, or direction query) proves
+  // the radar is alive and ready to accept configuration.
+  if (last_heartbeat_millis_ > 0) {
+    ESP_LOGW(TAG, "*** Starting initialization (first frame at %u ms, uptime=%u ms) ***",
+             last_heartbeat_millis_, millis());
     init_done_ = true;
 
     // 1. Basic Settings
