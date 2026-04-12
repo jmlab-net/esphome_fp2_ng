@@ -182,45 +182,64 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
-| 0x0155 | PEOPLE_COUNTING | ? | R→E | N | People counting data |
+| 0x0155 | PEOPLE_COUNTING | BLOB2 | R→E | N | People counting data (complex blob) |
 | 0x0158 | PEOPLE_COUNT_REPORT_ENABLE | BOOL | E→R | Y | Enable count reports |
 | 0x0162 | PEOPLE_NUMBER_ENABLE | BOOL | E→R | Y | Enable number tracking |
 | 0x0163 | TARGET_TYPE_ENABLE | BOOL | E→R | Y | AI person detection |
-| 0x0164 | REALTIME_PEOPLE | ? | R→E | N | Real-time people data |
-| 0x0165 | ONTIME_PEOPLE_NUMBER | UINT32 | R→E | Y | Total person count |
-| 0x0166 | REALTIME_COUNT | ? | R→E | N | Real-time count |
+| 0x0164 | REALTIME_PEOPLE | UINT32 | R→E | Y | Real-time total person count |
+| 0x0165 | ONTIME_PEOPLE_NUMBER | UINT32 | R→E | Y | Periodic total person count |
+| 0x0166 | REALTIME_COUNT | UINT32 | R→E | Y | Real-time count (logged) |
+| **0x0175** | **ZONE_PEOPLE_NUMBER** | **UINT16** | **R→E** | **N** | **`[zone_id<<8\|count]` — native per-zone people count from radar** |
 
 ### Posture / Activity
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
-| 0x0154 | TARGET_POSTURE | ? | R→E | N | Target posture reports |
+| 0x0154 | TARGET_POSTURE | UINT16 | R→E | N | `[zone_id<<8\|posture]` — per-zone posture value |
 | 0x0157 | POSTURE_REPORT_ENABLE | BOOL | E→R | N | Enable posture reporting |
-| 0x0172 | DWELL_TIME_ENABLE | UINT8 | E→R | P | Dwell tracking (disabled in init) |
-| 0x0173 | WALK_DISTANCE_ENABLE | UINT8 | E→R | P | Walking distance (disabled in init) |
-| 0x0174 | WALK_DISTANCE_ALL | ? | R→E | N | Walking distance data |
+| 0x0172 | DWELL_TIME_ENABLE | BOOL | E→R | P | Dwell tracking (disabled in init) |
+| 0x0173 | WALK_DISTANCE_ENABLE | BOOL | E→R | P | Walking distance (disabled in init) |
+| 0x0174 | WALK_DISTANCE_ALL | UINT32 | R→E | N | Walking distance (converted to float) |
 
 ### Fall Detection
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
-| 0x0121 | FALL_DETECTION | ? | R→E | N | Fall detection event |
+| 0x0121 | FALL_DETECTION | UINT8 | R→E | N | Fall event state byte (publishes on change) |
 | 0x0123 | FALL_SENSITIVITY | UINT8 | E→R | P | Sensitivity (defined, commented in init) |
-| 0x0134 | FALL_OVERTIME_PERIOD | ? | E→R | N | Fall overtime period |
-| 0x0135 | FALL_OVERTIME_DETECTION | ? | R→E | N | Fall overtime detection |
+| 0x0134 | FALL_OVERTIME_PERIOD | UINT32 | E→R | N | Fall overtime report period |
+| 0x0135 | FALL_OVERTIME_DETECTION | UINT32 | R→E | N | Fall overtime detection event |
 
 ### Sleep Monitoring
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
 | 0x0156 | SLEEP_REPORT_ENABLE | BOOL | E→R | N | Enable sleep reporting |
-| 0x0159 | SLEEP_DATA | ? | R→E | N | Sleep tracking data |
-| 0x0161 | SLEEP_STATE | ? | R→E | N | Current sleep state |
-| 0x0167 | SLEEP_PRESENCE | ? | R→E | N | Sleep zone presence |
+| 0x0159 | SLEEP_DATA | BLOB2 | R→E | N | Sleep tracking binary blob |
+| 0x0161 | SLEEP_STATE | UINT8 | R→E | N | Sleep state byte (publishes on change) |
+| 0x0167 | SLEEP_PRESENCE | UINT8 | R→E | N | Sleep zone presence state |
 | 0x0168 | SLEEP_MOUNT_POSITION | UINT8 | E→R | P | Sleep mount pos (defined, unused) |
-| 0x0169 | SLEEP_ZONE_SIZE | ? | E→R | P | Sleep zone size (defined, unused) |
-| 0x0171 | SLEEP_IN_OUT | ? | R→E | N | Sleep zone entry/exit |
-| 0x0176 | SLEEP_EVENT | ? | R→E | N | Sleep events |
+| 0x0169 | SLEEP_ZONE_SIZE | UINT32 | E→R | P | Sleep zone dimensions |
+| 0x0171 | SLEEP_IN_OUT | UINT8 | R→E | N | Sleep zone entry/exit state |
+| 0x0176 | SLEEP_EVENT | UINT8 | R→E | N | Sleep event type (publishes on change) |
+
+### Previously Undocumented SubIDs (from handler table RE)
+
+| SubID | Type | Dir | Description |
+|-------|------|-----|-------------|
+| 0x0113 | BOOL | R→E | Unknown (report only) |
+| 0x0118 | any | R→E | Reserved (null handler) |
+| 0x0119 | any | — | Reserved (null handler) |
+| 0x0124 | any | — | Reserved (null handler) |
+| 0x0126 | any | R→E | Reserved (null handler) |
+| 0x0129 | any | E←R | Reverse-read request (unknown purpose) |
+| 0x0130-0x0133 | any | — | Reserved (null handlers) |
+| 0x0136-0x0137 | any | — | Reserved (null handlers) |
+| 0x0140 | any | R→E | Report only (null handler) |
+| 0x0177 | UINT16 | R→E | Unknown (new SubID from handler table) |
+| 0x0178 | UINT16 | R→E | Unknown (new SubID from handler table) |
+| 0x0179 | UINT16 | R→E | Unknown (new SubID from handler table) |
+| 0x0180 | BLOB2 | E→R | Unknown (new SubID from handler table) |
 
 ### Temperature
 
@@ -407,7 +426,7 @@ functions in the stock firmware:
 | 0x0173 | — | `cloud_walking_distance_enable` |
 | 0x0174 | `radar_walking_distance_all` | `cloud_walking_distance_all` |
 | 0x0176 | `radar_sleep_event` | `cloud_sleep_event` |
-| — | `radar_zone_people_number` | `cloud_zone_people_number` |
+| 0x0175 | `radar_zone_people_number` | `cloud_zone_people_number` |
 | 0x0201 | `radar_debug_log_report` | — |
 
 ### Cloud-Only Attributes (from RE)
@@ -426,13 +445,39 @@ no corresponding SubID in the radar UART protocol:
 | `cloud_interface_ctrl_report` | Interface control reporting |
 | `cloud_reset_absent_status` | Reset absence state |
 
-### Notable Discovery: `radar_zone_people_number`
+### Major Discovery: Native Per-Zone People Counting (SubID 0x0175)
 
-The stock firmware has a handler called `radar_zone_people_number` — the radar
-natively supports per-zone person counting. The SubID for this is not yet
-identified (may be an undocumented attribute or derived from existing data).
-Our ESPHome implementation derives per-zone counts from target tracking data
-(0x0117), but the radar may have its own built-in zone counting.
+The radar natively supports per-zone person counting via SubID **0x0175**
+(`radar_zone_people_number`). Payload format: **UINT16** where
+`high byte = zone ID`, `low byte = people count in that zone`. This is the
+same format as zone presence (0x0142) and target posture (0x0154).
+
+Our ESPHome implementation currently derives per-zone counts from target
+tracking data (0x0117) by cross-referencing positions against zone grids.
+Using SubID 0x0175 directly would be simpler and more efficient — the radar
+does the counting natively.
+
+### Handler Registration Table Structure (from RE)
+
+The stock firmware's SubID dispatch uses a registration table at DRAM
+`0x3FFB1158` with 139 entries, each 32 bytes:
+
+```c
+struct handler_entry {          // 32 bytes per entry
+    uint16_t sub_id;            // +0x00: SubID
+    uint8_t  data_type;         // +0x02: expected type (7 = any)
+    uint8_t  padding;           // +0x03
+    uint32_t user_data;         // +0x04: context passed to handler
+    void    *handler_func;      // +0x08: radar handler function
+    void    *cloud_func;        // +0x0C: cloud relay function
+    uint8_t  reserved[8];       // +0x10 - +0x17
+    uint8_t  allowed_opcodes[5];// +0x18 - +0x1C: which opcodes trigger this
+};
+```
+
+The dispatcher at `FUN_400de81c` iterates all 139 entries, matching on
+SubID and opcode. If the data type doesn't match (and isn't 7/any), the
+frame is NACKed.
 
 ## Radar Firmware Version Compatibility
 
