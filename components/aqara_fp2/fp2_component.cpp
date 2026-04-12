@@ -116,13 +116,10 @@ void FP2Component::check_initialization_() {
     return;
   }
 
-  // The radar sends heartbeats (~1Hz) during its boot phase.
-  // Wait until heartbeats have been received AND there's been a gap
-  // (no heartbeat for 3+ seconds), meaning the boot phase is ending.
-  // Also accept temperature/direction frames as proof radar is ready.
-  if (last_heartbeat_millis_ > 0 &&
-      (millis() - last_heartbeat_millis_ > 3000 || last_heartbeat_millis_ == 1)) {
-    ESP_LOGW(TAG, "*** Radar ready. Starting init (last_hb=%u ms, uptime=%u ms) ***",
+  // Trigger init on first heartbeat — the radar accepts commands while
+  // sending heartbeats. The heartbeat never stops (it's a keep-alive).
+  if (last_heartbeat_millis_ > 0) {
+    ESP_LOGW(TAG, "*** Init triggered (heartbeat at %u ms, uptime=%u ms) ***",
              last_heartbeat_millis_, millis());
     init_done_ = true;
 
@@ -133,11 +130,11 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT_SENSITIVITY, global_presence_sensitivity_);
     enqueue_command_(OpCode::WRITE, AttrId::CLOSING_SETTING, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t) 0x0001);
-    enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, (uint8_t) 1); // Enable fall detection
+    // enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, (uint8_t) 1); // TODO: stalls queue
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // BOOL
+    // enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // TODO: stalls queue
     // enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) 0); // sleep zone mount pos
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
@@ -693,11 +690,6 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::TEMPERATURE:
-      // Temperature report means radar finished booting — trigger init immediately
-      if (!init_done_) {
-        last_heartbeat_millis_ = 1;  // Special value: skip heartbeat gap wait
-        ESP_LOGI(TAG, "Temperature report — radar ready, triggering init");
-      }
       handle_temperature_report_(payload);
       break;
 
@@ -844,12 +836,6 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 }
 
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
-  // Direction query means radar finished booting — trigger init immediately
-  if (!init_done_) {
-    last_heartbeat_millis_ = 1;  // Special value: skip heartbeat gap wait
-    ESP_LOGI(TAG, "Reverse query — radar ready, triggering init");
-  }
-
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
   if (payload.size() == 2) {
     handle_reverse_read_request_(attr_id);
