@@ -257,16 +257,19 @@ CONFIG_SCHEMA = (
             ),
             cv.Optional(CONF_HEART_RATE): sensor.sensor_schema(
                 icon="mdi:heart-pulse",
+                unit_of_measurement="bpm",
                 accuracy_decimals=0,
                 state_class=STATE_CLASS_MEASUREMENT,
             ),
             cv.Optional(CONF_RESPIRATION_RATE): sensor.sensor_schema(
                 icon="mdi:lungs",
+                unit_of_measurement="br/min",
                 accuracy_decimals=0,
                 state_class=STATE_CLASS_MEASUREMENT,
             ),
             cv.Optional(CONF_BODY_MOVEMENT): sensor.sensor_schema(
                 icon="mdi:run",
+                unit_of_measurement="units",
                 accuracy_decimals=0,
                 state_class=STATE_CLASS_MEASUREMENT,
             ),

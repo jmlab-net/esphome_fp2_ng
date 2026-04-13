@@ -244,7 +244,7 @@ void FP2Component::check_initialization_() {
     if (global_motion_sensor_ != nullptr) global_motion_sensor_->publish_state(false);
     if (people_count_sensor_ != nullptr) people_count_sensor_->publish_state(0);
     if (fall_detection_sensor_ != nullptr) fall_detection_sensor_->publish_state(false);
-    if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->publish_state("awake");
+    if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->publish_state("none");
     if (sleep_presence_sensor_ != nullptr) sleep_presence_sensor_->publish_state(false);
 
     // Clear target tracking state - no targets after reset
@@ -526,12 +526,17 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
       last_heartbeat_millis_ = millis();
-      if (payload.size() == 4 && payload[2] == 0x00) {
-        auto ver_str = std::to_string(payload[3]);
-        if (radar_software_sensor_ != nullptr) {
-            if (radar_software_sensor_->state != ver_str) {
-                radar_software_sensor_->publish_state(ver_str);
-            }
+      if (payload.size() >= 4) {
+        if (payload[2] == 0x00) {
+          // Version byte maps to 3.<ver>.85 firmware string
+          char ver_buf[16];
+          snprintf(ver_buf, sizeof(ver_buf), "3.%u.85", payload[3]);
+          std::string ver_str(ver_buf);
+          if (radar_software_sensor_ != nullptr) {
+              if (radar_software_sensor_->state != ver_str) {
+                  radar_software_sensor_->publish_state(ver_str);
+              }
+          }
         }
       }
       break;
@@ -599,6 +604,22 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 }
                 if (people_count_sensor_ != nullptr) {
                     people_count_sensor_->publish_state(0);
+                }
+                // Clear sleep-related sensors
+                if (sleep_state_sensor_ != nullptr) {
+                    sleep_state_sensor_->publish_state("none");
+                }
+                if (sleep_presence_sensor_ != nullptr) {
+                    sleep_presence_sensor_->publish_state(false);
+                }
+                if (heart_rate_sensor_ != nullptr) {
+                    heart_rate_sensor_->publish_state(NAN);
+                }
+                if (respiration_rate_sensor_ != nullptr) {
+                    respiration_rate_sensor_->publish_state(NAN);
+                }
+                if (body_movement_sensor_ != nullptr) {
+                    body_movement_sensor_->publish_state(NAN);
                 }
             }
         }
