@@ -123,10 +123,11 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::PRESENCE_DETECT_SENSITIVITY, global_presence_sensitivity_);
     enqueue_command_(OpCode::WRITE, AttrId::CLOSING_SETTING, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t) 0x0001);
-    // enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, fall_detection_sensitivity_);
+    enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, fall_detection_sensitivity_);
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
@@ -583,8 +584,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
     case AttrId::PRESENCE_DETECT:
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
-            // Same even/odd convention as motion: even = occupied, odd = empty
-            bool present = (state % 2 == 0);
+            // Stock firmware: 0 = empty, non-zero = occupied
+            // (NOT the same as motion which uses even/odd)
+            bool present = (state != 0);
             global_presence_active_ = present;
             if (global_presence_sensor_ != nullptr) {
                 global_presence_sensor_->publish_state(present);

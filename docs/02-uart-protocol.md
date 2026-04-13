@@ -131,7 +131,7 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
 | 0x0103 | MOTION_DETECT | UINT8 | R→E | Y | Global motion (even=active, odd=inactive) |
-| 0x0104 | PRESENCE_DETECT | UINT8 | R→E | Y | Global presence (even=occupied, odd=empty) |
+| 0x0104 | PRESENCE_DETECT | UINT8 | R→E | Y | Global presence (0=empty, non-zero=occupied) |
 | 0x0115 | DETECT_ZONE_MOTION | UINT16 | R→E | Y | Zone motion `[zone_id, state]` |
 | 0x0116 | WORK_MODE | UINT8 | Both | Y | Work mode report/config |
 | 0x0142 | ZONE_PRESENCE | UINT16 | R→E | Y | Zone presence `[zone_id, state]` |

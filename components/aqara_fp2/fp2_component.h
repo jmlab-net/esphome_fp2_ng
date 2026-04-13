@@ -116,7 +116,7 @@ enum class AttrId : uint16_t {
 
     // --- Detection Reports ---
     MOTION_DETECT                   = 0x0103, // Global motion (even=active, odd=inactive)
-    PRESENCE_DETECT                 = 0x0104, // Global presence (even=occupied, odd=empty)
+    PRESENCE_DETECT                 = 0x0104, // Global presence (0=empty, non-zero=occupied)
     DETECT_ZONE_MOTION              = 0x0115, // Zone motion event [zone_id, state]
     ZONE_PRESENCE                   = 0x0142, // Zone presence [zone_id, state]
     WORK_MODE                       = 0x0116, // Work mode report
