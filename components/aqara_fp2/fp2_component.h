@@ -412,7 +412,6 @@ protected:
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   bool location_reporting_active_{false};
-  bool has_zone_people_count_sensors_{false};
 
   // Grid text sensors
   text_sensor::TextSensor *edge_label_grid_sensor_{nullptr};

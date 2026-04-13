@@ -253,17 +253,10 @@ void FP2Component::check_initialization_() {
       target_tracking_sensor_->set_has_state(false);
     }
 
-    // Auto-enable location reporting if any zone has a people count sensor
-    for (const auto &zone : zones_) {
-      if (zone->zone_people_count_sensor != nullptr) {
-        has_zone_people_count_sensors_ = true;
-        break;
-      }
-    }
-    if (has_zone_people_count_sensors_) {
-      ESP_LOGI(TAG, "Zone people count sensors configured, enabling location reporting");
-      set_location_reporting_enabled(true);
-    }
+    // Note: zone people counting now uses native radar reports (SubID 0x0175)
+    // so location reporting is NOT auto-enabled. The user controls it via
+    // the Report Targets switch. Location-based counting in
+    // update_zone_people_counts_() is a fallback when reporting is active.
   }
 }
 
@@ -917,10 +910,9 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
     this->target_tracking_sensor_->publish_state(base64_str);
   }
 
-  // Update per-zone people counts from target positions
-  if (has_zone_people_count_sensors_) {
-    update_zone_people_counts_(payload, count);
-  }
+  // Position-based zone people counting is available as a fallback but
+  // normally disabled — native radar reports (SubID 0x0175) are preferred.
+  // update_zone_people_counts_(payload, count);
 }
 
 bool FP2Component::is_target_in_zone_(int16_t raw_x, int16_t raw_y, const GridMap &grid) {
