@@ -1276,20 +1276,33 @@ uint16_t FP2Component::xmodem_crc16_(const uint8_t *data, size_t len) {
 }
 
 uint32_t FP2Component::ota_detect_firmware_size_() {
-  // Scan backwards from end of mcu_ota partition to find last non-0xFF byte
-  // Read in 4K chunks from the end
+  // Validate the firmware starts with TI MSTR magic header
+  uint8_t magic[4];
+  esp_err_t err = esp_flash_read(NULL, magic, MCU_OTA_FLASH_OFFSET, 4);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "OTA: cannot read flash at 0x%06x (err=0x%x)", MCU_OTA_FLASH_OFFSET, err);
+    return 0;
+  }
+
+  // TI IWR6843 firmware starts with "MSTR" (0x4D535452)
+  if (magic[0] != 'M' || magic[1] != 'S' || magic[2] != 'T' || magic[3] != 'R') {
+    ESP_LOGE(TAG, "OTA: invalid firmware header (expected MSTR, got %02x %02x %02x %02x)",
+             magic[0], magic[1], magic[2], magic[3]);
+    return 0;
+  }
+
+  // Scan backwards from end of partition to find last non-0xFF byte
   uint8_t buf[256];
   uint32_t offset = MCU_OTA_FLASH_SIZE;
 
   while (offset > 0) {
     uint32_t chunk = (offset >= sizeof(buf)) ? sizeof(buf) : offset;
     offset -= chunk;
-    esp_err_t err = esp_flash_read(NULL, buf, MCU_OTA_FLASH_OFFSET + offset, chunk);
+    err = esp_flash_read(NULL, buf, MCU_OTA_FLASH_OFFSET + offset, chunk);
     if (err != ESP_OK) {
-      ESP_LOGE(TAG, "Flash read error at 0x%06x: 0x%x", MCU_OTA_FLASH_OFFSET + offset, err);
+      ESP_LOGE(TAG, "OTA: flash read error at 0x%06x: 0x%x", MCU_OTA_FLASH_OFFSET + offset, err);
       return 0;
     }
-    // Scan backwards in this chunk
     for (int i = chunk - 1; i >= 0; i--) {
       if (buf[i] != 0xFF) {
         uint32_t size = offset + i + 1;
@@ -1308,15 +1321,31 @@ void FP2Component::trigger_radar_ota() {
     return;
   }
 
-  // Detect firmware size in mcu_ota partition
+  ESP_LOGW(TAG, "=== Radar OTA: validating firmware ===");
+
+  // Detect and validate firmware in mcu_ota partition
   ota_firmware_size_ = ota_detect_firmware_size_();
   if (ota_firmware_size_ == 0) {
-    ESP_LOGE(TAG, "No radar firmware found in mcu_ota partition (offset 0x%06x)", MCU_OTA_FLASH_OFFSET);
+    ESP_LOGE(TAG, "OTA ABORTED: no valid radar firmware in flash (offset 0x%06x).", MCU_OTA_FLASH_OFFSET);
+    ESP_LOGE(TAG, "The mcu_ota partition may have been erased during ESPHome flashing.");
+    ESP_LOGE(TAG, "A valid TI IWR6843 firmware file (starting with MSTR header) is required.");
     return;
   }
 
-  ESP_LOGW(TAG, "=== Starting Radar OTA: %u bytes (%u blocks) ===",
-           ota_firmware_size_, ota_firmware_size_ / XMODEM_BLOCK_SIZE);
+  // Sanity check firmware size
+  if (ota_firmware_size_ < 1024) {
+    ESP_LOGE(TAG, "OTA ABORTED: firmware too small (%u bytes)", ota_firmware_size_);
+    return;
+  }
+  if (ota_firmware_size_ > MCU_OTA_FLASH_SIZE) {
+    ESP_LOGE(TAG, "OTA ABORTED: firmware too large (%u bytes, max %u)", ota_firmware_size_, MCU_OTA_FLASH_SIZE);
+    return;
+  }
+
+  uint32_t blocks = ota_firmware_size_ / XMODEM_BLOCK_SIZE;
+  ESP_LOGW(TAG, "=== Starting Radar OTA: %u bytes (%u blocks, ~%u seconds) ===",
+           ota_firmware_size_, blocks, blocks / 50 + 10);
+  ESP_LOGW(TAG, "WARNING: Do not power off the device during transfer!");
 
   // Send OTA trigger command via protocol
   enqueue_command_(OpCode::WRITE, AttrId::OTA_SET_FLAG, true);
