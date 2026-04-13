@@ -75,6 +75,7 @@ CONF_SLEEP_STATE = "sleep_state"
 CONF_SLEEP_PRESENCE = "sleep_presence"
 CONF_HEART_RATE = "heart_rate"
 CONF_RESPIRATION_RATE = "respiration_rate"
+CONF_BODY_MOVEMENT = "body_movement"
 
 MOUNTING_POSITIONS = {
     "wall": 0x01,
@@ -264,6 +265,11 @@ CONFIG_SCHEMA = (
                 accuracy_decimals=0,
                 state_class=STATE_CLASS_MEASUREMENT,
             ),
+            cv.Optional(CONF_BODY_MOVEMENT): sensor.sensor_schema(
+                icon="mdi:run",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
         }
     )
     .extend(uart.UART_DEVICE_SCHEMA)
@@ -278,6 +284,7 @@ SENSOR_MAP = {
     CONF_SLEEP_PRESENCE: (binary_sensor.new_binary_sensor, "set_sleep_presence_sensor"),
     CONF_HEART_RATE: (sensor.new_sensor, "set_heart_rate_sensor"),
     CONF_RESPIRATION_RATE: (sensor.new_sensor, "set_respiration_rate_sensor"),
+    CONF_BODY_MOVEMENT: (sensor.new_sensor, "set_body_movement_sensor"),
     CONF_RADAR_SOFTWARE_VERSION: (text_sensor_.new_text_sensor, "set_radar_software_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),

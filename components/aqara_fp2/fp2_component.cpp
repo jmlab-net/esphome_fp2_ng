@@ -735,6 +735,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (respiration_rate_sensor_ != nullptr) {
                     respiration_rate_sensor_->publish_state((float)resp_rate);
                 }
+                if (body_movement_sensor_ != nullptr) {
+                    body_movement_sensor_->publish_state((float)body_move);
+                }
             } else {
                 // Log raw hex for unexpected sizes
                 ESP_LOGW(TAG, "Sleep data unexpected size %d bytes", blob_len);
