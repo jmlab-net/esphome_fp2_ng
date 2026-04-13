@@ -71,6 +71,8 @@ CONF_CALIBRATE_EDGE = "calibrate_edge"
 CONF_CALIBRATE_INTERFERENCE = "calibrate_interference"
 CONF_FALL_DETECTION = "fall_detection"
 CONF_POSTURE = "posture"
+CONF_SLEEP_STATE = "sleep_state"
+CONF_SLEEP_PRESENCE = "sleep_presence"
 
 MOUNTING_POSITIONS = {
     "wall": 0x01,
@@ -243,6 +245,13 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_FALL_DETECTION): binary_sensor.binary_sensor_schema(
                 icon="mdi:slip-and-fall",
             ),
+            cv.Optional(CONF_SLEEP_STATE): text_sensor_.text_sensor_schema(
+                icon="mdi:sleep",
+            ),
+            cv.Optional(CONF_SLEEP_PRESENCE): binary_sensor.binary_sensor_schema(
+                icon="mdi:bed",
+                device_class=DEVICE_CLASS_OCCUPANCY,
+            ),
         }
     )
     .extend(uart.UART_DEVICE_SCHEMA)
@@ -253,6 +262,8 @@ SENSOR_MAP = {
     CONF_RADAR_TEMPERATURE: (sensor.new_sensor, "set_radar_temperature_sensor"),
     CONF_PEOPLE_COUNT: (sensor.new_sensor, "set_people_count_sensor"),
     CONF_FALL_DETECTION: (binary_sensor.new_binary_sensor, "set_fall_detection_sensor"),
+    CONF_SLEEP_STATE: (text_sensor_.new_text_sensor, "set_sleep_state_sensor"),
+    CONF_SLEEP_PRESENCE: (binary_sensor.new_binary_sensor, "set_sleep_presence_sensor"),
     CONF_RADAR_SOFTWARE_VERSION: (text_sensor_.new_text_sensor, "set_radar_software_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),

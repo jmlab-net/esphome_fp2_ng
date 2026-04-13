@@ -127,7 +127,7 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
-    // enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) 0); // sleep zone mount pos
+    enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
     enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE, (uint8_t) 0); // walking distance enable
@@ -244,6 +244,8 @@ void FP2Component::check_initialization_() {
     if (global_motion_sensor_ != nullptr) global_motion_sensor_->publish_state(false);
     if (people_count_sensor_ != nullptr) people_count_sensor_->publish_state(0);
     if (fall_detection_sensor_ != nullptr) fall_detection_sensor_->publish_state(false);
+    if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->publish_state("awake");
+    if (sleep_presence_sensor_ != nullptr) sleep_presence_sensor_->publish_state(false);
 
     // Clear target tracking state - no targets after reset
     if (target_tracking_sensor_ != nullptr) {
@@ -665,6 +667,73 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             if (fall_detection_sensor_ != nullptr) {
                 fall_detection_sensor_->publish_state(state != 0);
             }
+        }
+        break;
+
+    case AttrId::SLEEP_STATE:
+        // Sleep state: UINT8 (publishes on change in stock firmware)
+        // Values observed: 0=awake, 1=light sleep, 2=deep sleep (TBD)
+        if (payload.size() >= 4 && payload[2] == 0x00) {
+            uint8_t state = payload[3];
+            const char *state_str;
+            switch (state) {
+                case 0: state_str = "awake"; break;
+                case 1: state_str = "light"; break;
+                case 2: state_str = "deep"; break;
+                case 3: state_str = "rem"; break;
+                default: state_str = "unknown"; break;
+            }
+            ESP_LOGI(TAG, "Sleep state: %u (%s)", state, state_str);
+            if (sleep_state_sensor_ != nullptr) {
+                sleep_state_sensor_->publish_state(state_str);
+            }
+        }
+        break;
+
+    case AttrId::SLEEP_PRESENCE:
+        // Sleep zone presence: UINT8
+        if (payload.size() >= 4 && payload[2] == 0x00) {
+            uint8_t state = payload[3];
+            ESP_LOGI(TAG, "Sleep presence: %u", state);
+            if (sleep_presence_sensor_ != nullptr) {
+                sleep_presence_sensor_->publish_state(state != 0);
+            }
+        }
+        break;
+
+    case AttrId::SLEEP_IN_OUT:
+        // Sleep zone entry/exit: UINT8
+        if (payload.size() >= 4 && payload[2] == 0x00) {
+            uint8_t state = payload[3];
+            ESP_LOGI(TAG, "Sleep in/out: %u (%s)", state, state != 0 ? "in" : "out");
+            // Update sleep presence from in/out events too
+            if (sleep_presence_sensor_ != nullptr) {
+                sleep_presence_sensor_->publish_state(state != 0);
+            }
+        }
+        break;
+
+    case AttrId::SLEEP_DATA:
+        // Sleep tracking data: BLOB2, ~12 bytes
+        // Stock firmware copies into 3 x uint32 buffer
+        if (payload.size() >= 5 && payload[2] == 0x06) {
+            uint16_t blob_len = (payload[3] << 8) | payload[4];
+            ESP_LOGI(TAG, "Sleep data (%d bytes):", blob_len);
+            // Log raw hex for analysis
+            std::string hex;
+            for (int i = 5; i < (int)payload.size() && i < 5 + blob_len; i++) {
+                char buf[4];
+                snprintf(buf, sizeof(buf), "%02X ", payload[i]);
+                hex += buf;
+            }
+            ESP_LOGI(TAG, "  %s", hex.c_str());
+        }
+        break;
+
+    case AttrId::SLEEP_EVENT:
+        // Sleep event: UINT8 (type of sleep event)
+        if (payload.size() >= 4 && payload[2] == 0x00) {
+            ESP_LOGI(TAG, "Sleep event: type=%u", payload[3]);
         }
         break;
 

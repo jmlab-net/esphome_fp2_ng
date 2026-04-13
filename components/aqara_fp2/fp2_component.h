@@ -328,6 +328,12 @@ public:
   void set_fall_detection_sensor(binary_sensor::BinarySensor *sensor) {
       fall_detection_sensor_ = sensor;
   }
+  void set_sleep_state_sensor(text_sensor::TextSensor *sensor) {
+      sleep_state_sensor_ = sensor;
+  }
+  void set_sleep_presence_sensor(binary_sensor::BinarySensor *sensor) {
+      sleep_presence_sensor_ = sensor;
+  }
 
   void set_fp2_accel(aqara_fp2_accel::AqaraFP2Accel *accel) {
       fp2_accel_ = accel;
@@ -408,6 +414,8 @@ protected:
   sensor::Sensor *people_count_sensor_{nullptr};
   text_sensor::TextSensor *radar_software_sensor_{nullptr};
   binary_sensor::BinarySensor *fall_detection_sensor_{nullptr};
+  text_sensor::TextSensor *sleep_state_sensor_{nullptr};
+  binary_sensor::BinarySensor *sleep_presence_sensor_{nullptr};
 
   // Map Configuration (compile-time generated)
   std::string map_config_json_;
