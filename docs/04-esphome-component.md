@@ -51,7 +51,9 @@ After successful CRC validation, the frame is dispatched to `handle_parsed_frame
 which routes by OpCode to:
 - `handle_ack_()` — processes ACKs, releases command queue
 - `handle_report_()` — processes radar reports (presence, motion, tracking, etc.)
-- `handle_response_()` — handles reverse-read requests from the radar
+- `handle_response_()` — handles reverse-read requests from the radar, and
+  routes data-bearing responses through `handle_report_()` (some SubIDs like
+  zone presence may arrive as RESPONSE instead of REPORT)
 
 ## Command Queue
 
@@ -69,24 +71,31 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 
 | Config Key | Entity Type | Class | Description |
 |------------|-------------|-------|-------------|
-| `global_zone.presence` | binary_sensor | occupancy | Overall presence (from SubID 0x0104) |
-| `global_zone.motion` | binary_sensor | motion | Overall motion (from SubID 0x0103) |
+| `global_zone.presence` | binary_sensor | occupancy | Overall presence (SubID 0x0104: 0=empty, non-zero=occupied) |
+| `global_zone.motion` | binary_sensor | motion | Overall motion (SubID 0x0103: even=active, odd=inactive) |
 | `people_count` | sensor | measurement | Total person count (from SubID 0x0165) |
-| `target_tracking` | text_sensor | diagnostic | Base64-encoded target data (from SubID 0x0117) |
-| `location_report_switch` | switch | — | Enable/disable location tracking reports |
+| `fall_detection` | binary_sensor | — | Fall event (SubID 0x0121) |
+| `sleep_state` | text_sensor | — | Sleep state: none/awake/light/deep/rem (SubID 0x0161) |
+| `sleep_presence` | binary_sensor | occupancy | Sleep zone presence (SubID 0x0167) |
+| `heart_rate` | sensor | measurement (bpm) | Heart rate from sleep monitoring (SubID 0x0159) |
+| `respiration_rate` | sensor | measurement (br/min) | Respiration rate from sleep monitoring (SubID 0x0159) |
+| `body_movement` | sensor | measurement | Body movement from sleep monitoring (SubID 0x0159) |
+| `target_tracking` | text_sensor | diagnostic | Base64-encoded target data (SubID 0x0117) |
+| `location_report_switch` | switch | — | Show/hide target tracking data (see below) |
 | `calibrate_edge` | button | diagnostic | Trigger edge boundary auto-calibration |
 | `calibrate_interference` | button | diagnostic | Trigger interference auto-calibration |
 | `radar_temperature` | sensor | temperature | Radar chip temperature in Celsius |
-| `radar_software_version` | text_sensor | diagnostic | Radar firmware version |
+| `radar_software_version` | text_sensor | diagnostic | Radar firmware build number |
 | `mounting_position_sensor` | text_sensor | diagnostic | Current mount position string |
 
 ### Per-Zone Sensors
 
 | Config Key | Entity Type | Class | Description |
 |------------|-------------|-------|-------------|
-| `presence` | binary_sensor | occupancy | Zone presence (from SubID 0x0142) |
-| `motion` | binary_sensor | motion | Zone motion (from SubID 0x0115) |
-| `zone_people_count` | sensor | measurement | People count in zone (derived from 0x0117 targets) |
+| `presence` | binary_sensor | occupancy | Zone presence (inferred from motion and people count) |
+| `motion` | binary_sensor | motion | Zone motion (SubID 0x0115: even=active, odd=inactive) |
+| `zone_people_count` | sensor | measurement | Native per-zone count (SubID 0x0175) |
+| `posture` | text_sensor | — | Per-zone posture: none/standing/sitting/lying (SubID 0x0154) |
 | `zone_map_sensor` | text_sensor | diagnostic | Zone grid as hex string |
 
 ### Accelerometer / Light Sensor
@@ -105,22 +114,41 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 
 ## Per-Zone People Counting
 
-Zone people counting works by cross-referencing target positions from the
-location tracking data (SubID 0x0117) against each zone's grid bitmap:
+Zone people counting uses the radar's native per-zone count reports
+(SubID 0x0175). The radar internally counts people in each configured zone
+and sends periodic REPORT frames with `[zone_id, count]`.
 
-1. When any zone has a `zone_people_count` sensor configured, location reporting
-   is automatically enabled during initialization
-2. Each location tracking report (10-20 Hz) contains all tracked targets with
-   their x/y positions
-3. For each zone, the component counts how many targets fall within the zone's
-   grid cells using `is_target_in_zone_()`
-4. The count is published to the zone's sensor
+### Location Reporting and People Counting
 
-The coordinate-to-grid mapping:
-```cpp
-col = int((-raw_x + 400) / 800.0 * 14.0) + 2  // offset_col = 2
-row = int(raw_y / 800.0 * 14.0)                 // offset_row = 0
-```
+The radar's people counting depends on its internal location tracking being
+active. The component always enables `LOCATION_REPORT_ENABLE` (0x0112) during
+initialization to ensure counting works.
+
+The **Report Targets** switch controls only whether target tracking data is
+published to the `target_tracking` text sensor in HA. It does **not** disable
+the radar's internal tracking — people counting, zone presence inference, and
+all other features continue working regardless of the switch state.
+
+### Zone Presence Inference
+
+The radar may not send explicit zone presence reports (SubID 0x0142) when a
+zone is already occupied at boot — it only fires on state transitions. To
+ensure zone presence is always accurate, it is inferred from:
+
+- **Zone motion active** → zone presence ON
+- **Zone people count > 0** → zone presence ON
+- **Zone people count == 0** → zone presence OFF
+- **Global presence OFF** → all zones cleared (cascade)
+
+### State Clearing Cascade
+
+When global presence (SubID 0x0104) reports empty (state 0), the component
+clears all zone and global states to ensure consistency:
+
+- All zone presence, motion, people count, and posture → cleared
+- Global people count → 0
+- Sleep state → "none", sleep presence → off
+- Heart rate, respiration rate, body movement → unknown (NAN)
 
 ## Auto-Calibration
 
@@ -147,8 +175,6 @@ The OPT3001 ambient light sensor shares the I2C bus with the accelerometer:
   on >5% change to avoid flooding HA.
 - **Bus contention**: 5ms yield between accel and OPT3001 reads. Automatic
   `i2c_master_bus_reset()` on timeout/invalid-state errors.
-- **I2C bus scan**: Runs during `dump_config()` and logs all devices found on
-  the bus (diagnostic).
 
 ## Configuration Reference
 
@@ -206,6 +232,22 @@ aqara_fp2:
     name: "Radar Temperature"
   radar_software_version:
     name: "Radar Version"
+  fall_detection:
+    name: "Fall Detected"
+
+  # Sleep monitoring
+  sleep_state:
+    name: "Sleep State"
+  sleep_presence:
+    name: "Sleep Presence"
+  heart_rate:
+    name: "Heart Rate"
+  respiration_rate:
+    name: "Respiration Rate"
+  body_movement:
+    name: "Body Movement"
+
+  # Target tracking
   target_tracking:
     name: "Targets"
   location_report_switch:
@@ -216,23 +258,6 @@ aqara_fp2:
     name: "Calibrate Room Boundaries"
   calibrate_interference:
     name: "Calibrate Interference"
-
-  # Edge grid (tells radar where the room boundaries are)
-  edge_grid: |-
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
-    XXXXXXXXXXXXXX
 
   # Global presence/motion
   global_zone:
@@ -267,6 +292,8 @@ aqara_fp2:
         name: "Bed Motion"
       zone_people_count:
         name: "Bed People Count"
+      posture:
+        name: "Bed Posture"
 ```
 
 ### Required ESP32 Config
@@ -316,8 +343,6 @@ blocking the main ESPHome loop with I2C operations.
   state, ambient light (lux)
 - **Thread safety**: All public accessors use FreeRTOS mutexes. Sensor publish
   happens from the main loop, not the task.
-- **I2C bus scan**: Runs during `dump_config()` phase, logs all discovered devices
-  with candidate identifications.
 
 The radar periodically queries the ESP32 for orientation and angle data via
 reverse-read requests (SubIDs 0x0143, 0x0120). The accelerometer component
