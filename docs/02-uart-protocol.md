@@ -130,8 +130,8 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
-| 0x0103 | MOTION_DETECT | UINT8 | R→E | Y | Global motion (0=motion, else=none) |
-| 0x0104 | PRESENCE_DETECT | UINT8 | R→E | Y | Global presence (0=empty, else=occupied) |
+| 0x0103 | MOTION_DETECT | UINT8 | R→E | Y | Global motion (even=active, odd=inactive) |
+| 0x0104 | PRESENCE_DETECT | UINT8 | R→E | Y | Global presence (even=occupied, odd=empty) |
 | 0x0115 | DETECT_ZONE_MOTION | UINT16 | R→E | Y | Zone motion `[zone_id, state]` |
 | 0x0116 | WORK_MODE | UINT8 | Both | Y | Work mode report/config |
 | 0x0142 | ZONE_PRESENCE | UINT16 | R→E | Y | Zone presence `[zone_id, state]` |
@@ -158,6 +158,7 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 | 0x0152 | DETECT_ZONE_TYPE | ? | E→R | P | Zone type (defined, not exposed) |
 | 0x0153 | ZONE_CLOSE_AWAY_ENABLE | UINT16 | E→R | Y | Zone close/away `[ID<<8\|en]` |
 | 0x0202 | ZONE_ACTIVATION_LIST | BLOB2 | E→R | Y | 32-byte zone bitmap |
+| 0x0203 | ZONE_CONFIG_SYNC | UINT8 | E→R | N | Zone config sync (see below) |
 
 ### Auto-Calibration
 
@@ -189,14 +190,14 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 | 0x0164 | REALTIME_PEOPLE | UINT32 | R→E | Y | Real-time total person count |
 | 0x0165 | ONTIME_PEOPLE_NUMBER | UINT32 | R→E | Y | Periodic total person count |
 | 0x0166 | REALTIME_COUNT | UINT32 | R→E | Y | Real-time count (logged) |
-| **0x0175** | **ZONE_PEOPLE_NUMBER** | **UINT16** | **R→E** | **N** | **`[zone_id<<8\|count]` — native per-zone people count from radar** |
+| **0x0175** | **ZONE_PEOPLE_NUMBER** | **UINT16** | **R→E** | **Y** | **`[zone_id<<8\|count]` — native per-zone people count from radar** |
 
 ### Posture / Activity
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
-| 0x0154 | TARGET_POSTURE | UINT16 | R→E | N | `[zone_id<<8\|posture]` — per-zone posture value |
-| 0x0157 | POSTURE_REPORT_ENABLE | BOOL | E→R | N | Enable posture reporting |
+| 0x0154 | TARGET_POSTURE | UINT16 | R→E | Y | `[zone_id<<8\|posture]` — per-zone posture (0=none,1=standing,2=sitting,3=lying) |
+| 0x0157 | POSTURE_REPORT_ENABLE | BOOL | E→R | P | Enable posture reporting (stalls queue — commented out) |
 | 0x0172 | DWELL_TIME_ENABLE | BOOL | E→R | P | Dwell tracking (disabled in init) |
 | 0x0173 | WALK_DISTANCE_ENABLE | BOOL | E→R | P | Walking distance (disabled in init) |
 | 0x0174 | WALK_DISTANCE_ALL | UINT32 | R→E | N | Walking distance (converted to float) |
@@ -205,8 +206,8 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
-| 0x0121 | FALL_DETECTION | UINT8 | R→E | N | Fall event state byte (publishes on change) |
-| 0x0123 | FALL_SENSITIVITY | UINT8 | E→R | P | Sensitivity (defined, commented in init) |
+| 0x0121 | FALL_DETECTION | UINT8 | R→E | Y | Fall event state byte (binary_sensor) |
+| 0x0123 | FALL_SENSITIVITY | UINT8 | E→R | P | Sensitivity (stalls queue — commented out) |
 | 0x0134 | FALL_OVERTIME_PERIOD | UINT32 | E→R | N | Fall overtime report period |
 | 0x0135 | FALL_OVERTIME_DETECTION | UINT32 | R→E | N | Fall overtime detection event |
 
@@ -214,14 +215,14 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
-| 0x0156 | SLEEP_REPORT_ENABLE | BOOL | E→R | N | Enable sleep reporting |
-| 0x0159 | SLEEP_DATA | BLOB2 | R→E | N | Sleep tracking binary blob |
-| 0x0161 | SLEEP_STATE | UINT8 | R→E | N | Sleep state byte (publishes on change) |
-| 0x0167 | SLEEP_PRESENCE | UINT8 | R→E | N | Sleep zone presence state |
+| 0x0156 | SLEEP_REPORT_ENABLE | BOOL | E→R | Y | Enable sleep reporting |
+| 0x0159 | SLEEP_DATA | BLOB2 | R→E | Y | 3x uint32 BE: heart_rate(bpm), resp_rate(br/min), body_movement |
+| 0x0161 | SLEEP_STATE | UINT8 | R→E | Y | 0=awake, 1=light, 2=deep, 3=rem |
+| 0x0167 | SLEEP_PRESENCE | UINT8 | R→E | Y | Sleep zone presence (binary_sensor) |
 | 0x0168 | SLEEP_MOUNT_POSITION | UINT8 | E→R | P | Sleep mount pos (defined, unused) |
 | 0x0169 | SLEEP_ZONE_SIZE | UINT32 | E→R | P | Sleep zone dimensions |
-| 0x0171 | SLEEP_IN_OUT | UINT8 | R→E | N | Sleep zone entry/exit state |
-| 0x0176 | SLEEP_EVENT | UINT8 | R→E | N | Sleep event type (publishes on change) |
+| 0x0171 | SLEEP_IN_OUT | UINT8 | R→E | Y | Sleep zone entry/exit (updates sleep_presence) |
+| 0x0176 | SLEEP_EVENT | UINT8 | R→E | Y | Sleep event type (logged) |
 
 ### Previously Undocumented SubIDs (from handler table RE)
 
@@ -306,17 +307,26 @@ calibration, not the coordinate ranges.
 
 1. ESP32 resets radar via GPIO13 (NRESET low for 100ms, then high)
 2. Radar begins sending heartbeat reports (`RADAR_SW_VERSION`, ~1 Hz)
-3. ESP32 detects first heartbeat and begins initialization:
+3. **Wait for radar boot completion** — the radar sends heartbeats during its
+   boot phase but does NOT ACK WRITE commands during this time. Init is
+   deferred until a non-heartbeat frame arrives (TEMPERATURE 0x0128 or
+   DEVICE_DIRECTION 0x0143), which signals the radar is fully ready.
+4. ESP32 begins initialization sequence:
    a. Basic settings (monitor mode, L/R reverse, sensitivity, proximity)
-   b. Feature enables (people count, target type, thermometer)
+   b. Feature enables (people count, target type, sleep, thermometer)
    c. Mounting position configuration
    d. Grid maps (interference, exit, edge)
    e. Zone maps with per-zone sensitivity
-   f. Zone activation list
+   f. Zone activation list (0x0202)
    g. Per-zone close/away enable
-4. Each WRITE waits for ACK before proceeding (500ms timeout, 3 retries)
-5. ESP32 publishes initial state (all zones = no presence/motion)
-6. Steady state: radar sends reports, ESP32 ACKs and processes them
+5. Each WRITE waits for ACK before proceeding (500ms timeout, 3 retries)
+6. ESP32 publishes initial state (all zones = no presence/motion)
+7. Steady state: radar sends reports, ESP32 ACKs and processes them
+
+**Note**: The stock firmware also sends ZONE_CONFIG_SYNC (0x0203) on every
+heartbeat after zone reconfiguration. Our component does not implement this
+because zones are static (defined in YAML at compile time). See the 0x0203
+section below for details.
 
 ## Grid Maps
 
@@ -360,7 +370,68 @@ unless an edge grid (0x0107) is configured. Without it, the radar tracks targets
 (0x0117 data flows) but never triggers binary presence detection.
 
 If no `edge_grid` is specified in the ESPHome config, a full-coverage default
-(all 0xFF, 20 rows x 16 cols) is sent automatically during initialization.
+is sent automatically during initialization. The default covers 14 active
+rows (0-13) with columns 2-15 active (row value `0x3FFC`).
+
+## Zone Configuration Sync (SubID 0x0203)
+
+Reverse-engineered from the stock firmware. This SubID is **not required** for
+basic operation but is documented here for future reference.
+
+### Mechanism
+
+The stock firmware sends `WRITE SubID=0x0203 UINT8 <value>` to the radar.
+This is a zone configuration synchronization command triggered after runtime
+zone changes.
+
+### Call Chain (from RE)
+
+```
+radar_sw_version()        @ 0x400e4f28  (heartbeat handler, SubID 0x0102)
+  └─ heartbeat_config_sync()  @ 0x400decd4  (sends WRITE 0x0203)
+       └─ FUN_400e7e20()      @ 0x400e7e20  (frame builder, opcode=2=WRITE)
+```
+
+### When It's Sent
+
+Called from the heartbeat handler on every heartbeat (~1Hz), but **only when**:
+1. A "needs sync" flag (`Ram400d1480`) is set, AND
+2. An internal zone config state flag is set
+
+The flag is set by `FUN_400e5ebc()` (zone reconfiguration trigger), which:
+- Increments a persistent NVS counter (config version)
+- Triggers zone-related callbacks
+- Resets ALL detection states (presence, motion) to 0xFF (unknown)
+- Sets the heartbeat sync flag
+
+### Payload
+
+```
+[SubID: 0x02 0x03] [DataType: 0x00 (UINT8)] [Value: 1 byte]
+```
+
+The value comes from offset 599 (0x257) of the main state struct at
+`Ram400d0e2c`. Its exact meaning is unclear but is likely a zone
+configuration version counter or active zone count.
+
+### Handler Table
+
+SubID 0x0203 has **no entry** in the 139-entry handler registration table at
+`0x3FFB1158`. It is write-only (ESP32 → radar). SubID 0x0202
+(ZONE_ACTIVATION_LIST) is also write-only with no handler entry.
+
+### Why We Don't Implement It
+
+Our ESPHome component uses static zones (defined in YAML at compile time).
+The stock firmware sends 0x0203 after **runtime** zone reconfiguration
+(e.g., via the Aqara app). Since our zones never change after init, the
+one-time ZONE_ACTIVATION_LIST (0x0202) sent during init is sufficient.
+
+If dynamic zone reconfiguration is ever added, this command should be sent
+after each zone change, following the stock firmware pattern:
+1. Send updated zone maps and activation list
+2. Set the sync flag
+3. heartbeat_config_sync fires on next heartbeat, sending 0x0203
 
 ## Handler Function Name Table (from RE)
 
@@ -445,17 +516,16 @@ no corresponding SubID in the radar UART protocol:
 | `cloud_interface_ctrl_report` | Interface control reporting |
 | `cloud_reset_absent_status` | Reset absence state |
 
-### Major Discovery: Native Per-Zone People Counting (SubID 0x0175)
+### Native Per-Zone People Counting (SubID 0x0175)
 
 The radar natively supports per-zone person counting via SubID **0x0175**
 (`radar_zone_people_number`). Payload format: **UINT16** where
 `high byte = zone ID`, `low byte = people count in that zone`. This is the
 same format as zone presence (0x0142) and target posture (0x0154).
 
-Our ESPHome implementation currently derives per-zone counts from target
-tracking data (0x0117) by cross-referencing positions against zone grids.
-Using SubID 0x0175 directly would be simpler and more efficient — the radar
-does the counting natively.
+**Status: Implemented.** The ESPHome component handles 0x0175 reports
+directly. It also derives per-zone counts from target tracking data (0x0117)
+as a fallback when location reporting is enabled.
 
 ### Handler Registration Table Structure (from RE)
 

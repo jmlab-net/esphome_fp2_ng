@@ -136,7 +136,7 @@ handler (`radar_*`) and cloud relay handler (`cloud_*`). See
 [02-uart-protocol.md](02-uart-protocol.md) for the full table.
 
 Key discoveries:
-- `radar_zone_people_number` — radar has **native per-zone counting** (SubID unknown)
+- `radar_zone_people_number` — SubID **0x0175**, native per-zone counting (implemented)
 - Cloud-only attributes found: bed height, overhead height, fall delay,
   blind zone, disturbance suppression
 - OpCode dispatch table at `3f40a6cc` with 5 handler function pointers
@@ -179,20 +179,46 @@ Key findings from RE:
 **Next steps**: Decompile `radar_ota_start` to get the exact sequence — what
 command puts the radar in bootloader mode, XMODEM parameters, completion signal.
 
-### Priority 2: Unknown SubID Data Formats
+### Completed: SubID 0x0203 Zone Configuration Sync
 
-Several SubIDs have unknown data types. The stock firmware handlers reveal them.
+**Status: SOLVED, not required for implementation**
 
-**Approach**: Find the main UART report dispatcher in the stock firmware
-(equivalent to our `handle_report_()`). Each case/branch reveals the payload
-parsing for that SubID.
+Reverse engineered the full call chain for SubID 0x0203:
+
+```
+radar_sw_version()         @ 0x400e4f28  (heartbeat handler)
+  └─ heartbeat_config_sync()   @ 0x400decd4  (WRITE 0x0203 UINT8)
+       └─ FUN_400e7e20()       @ 0x400e7e20  (frame builder)
+```
+
+Key findings:
+- **Write-only** — no handler in the 139-entry SubID registration table
+- Sent on every heartbeat after zone reconfiguration (flag at `Ram400d1480`)
+- The zone reconfig trigger (`FUN_400e5ebc`) increments an NVS counter,
+  resets all detection states, and sets the sync flag
+- Value comes from state struct offset 599 (0x257) — likely zone config
+  version counter
+- **Not needed** for static zones (our zones are YAML-defined at compile time)
+- Full documentation in [02-uart-protocol.md](02-uart-protocol.md)
+
+### Completed: SubID Data Formats
+
+**Status: SOLVED** — all priority formats decoded and implemented.
+
+| SubID | Name | Decoded Format | Status |
+|-------|------|---------------|--------|
+| 0x0121 | FALL_DETECTION | UINT8 state (0=no fall, non-zero=fall) | Implemented |
+| 0x0154 | TARGET_POSTURE | UINT16 [zone_id, posture] (0=none,1=stand,2=sit,3=lie) | Implemented |
+| 0x0159 | SLEEP_DATA | BLOB2: 3× uint32 BE (heart_rate bpm, resp_rate br/min, body_movement) | Implemented |
+| 0x0161 | SLEEP_STATE | UINT8 (0=awake, 1=light, 2=deep, 3=rem) | Implemented |
+| 0x0167 | SLEEP_PRESENCE | UINT8 (0=absent, non-zero=present) | Implemented |
+| 0x0171 | SLEEP_IN_OUT | UINT8 (0=out, non-zero=in) | Implemented |
+| 0x0175 | ZONE_PEOPLE_NUMBER | UINT16 [zone_id, count] | Implemented |
+
+### Priority 2: Remaining Unknown SubID Data Formats
 
 | SubID | Name | What to find |
 |-------|------|-------------|
-| 0x0121 | FALL_DETECTION | Event structure, severity levels |
-| 0x0154 | TARGET_POSTURE | Posture enum (standing/sitting/lying) |
-| 0x0159 | SLEEP_DATA | Sleep tracking data format |
-| 0x0161 | SLEEP_STATE | Sleep state enum (awake/light/deep?) |
 | 0x0164 | REALTIME_PEOPLE | Difference from ONTIME (0x0165) — seen in logs |
 | 0x0166 | REALTIME_COUNT | Also seen in logs as unhandled |
 | 0x0174 | WALK_DISTANCE_ALL | Distance data format and units |
