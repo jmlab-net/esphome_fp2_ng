@@ -31,12 +31,16 @@ from ..aqara_fp2_accel import AqaraFP2Accel
 
 DEPENDENCIES = ["uart"]
 AUTO_LOAD = ["binary_sensor", "button", "text_sensor", "sensor", "switch", "json"]
+# esp_http_client is needed for radar firmware OTA download
+CODEOWNERS = ["@JameZUK"]
 
 aqara_fp2_ns = cg.esphome_ns.namespace("aqara_fp2")
 FP2Component = aqara_fp2_ns.class_("FP2Component", cg.Component, uart.UARTDevice)
 FP2LocationSwitch = aqara_fp2_ns.class_("FP2LocationSwitch", switch.Switch)
 FP2CalibrateEdgeButton = aqara_fp2_ns.class_("FP2CalibrateEdgeButton", button.Button)
 FP2CalibrateInterferenceButton = aqara_fp2_ns.class_("FP2CalibrateInterferenceButton", button.Button)
+FP2ClearEdgeButton = aqara_fp2_ns.class_("FP2ClearEdgeButton", button.Button)
+FP2ClearInterferenceButton = aqara_fp2_ns.class_("FP2ClearInterferenceButton", button.Button)
 FP2RadarOtaButton = aqara_fp2_ns.class_("FP2RadarOtaButton", button.Button)
 FP2RadarFwStageButton = aqara_fp2_ns.class_("FP2RadarFwStageButton", button.Button)
 FP2Zone = aqara_fp2_ns.class_("FP2Zone", cg.Component)
@@ -73,6 +77,8 @@ CONF_PEOPLE_COUNT = "people_count"
 CONF_ZONE_PEOPLE_COUNT = "zone_people_count"
 CONF_CALIBRATE_EDGE = "calibrate_edge"
 CONF_CALIBRATE_INTERFERENCE = "calibrate_interference"
+CONF_CLEAR_EDGE = "clear_edge"
+CONF_CLEAR_INTERFERENCE = "clear_interference"
 CONF_RADAR_OTA = "radar_ota"
 CONF_RADAR_FW_STAGE = "radar_fw_stage"
 CONF_FALL_DETECTION = "fall_detection"
@@ -229,6 +235,16 @@ CONFIG_SCHEMA = (
                 icon="mdi:signal-off",
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_CLEAR_EDGE): button.button_schema(
+                FP2ClearEdgeButton,
+                icon="mdi:border-none-variant",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_CLEAR_INTERFERENCE): button.button_schema(
+                FP2ClearInterferenceButton,
+                icon="mdi:signal-off",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
             cv.Optional(CONF_RADAR_OTA): button.button_schema(
                 FP2RadarOtaButton,
                 icon="mdi:chip",
@@ -318,6 +334,8 @@ SENSOR_MAP = {
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),
     CONF_CALIBRATE_INTERFERENCE: (button.new_button, "set_calibrate_interference_button"),
+    CONF_CLEAR_EDGE: (button.new_button, "set_clear_edge_button"),
+    CONF_CLEAR_INTERFERENCE: (button.new_button, "set_clear_interference_button"),
     CONF_RADAR_OTA: (button.new_button, "set_radar_ota_button"),
     CONF_RADAR_FW_STAGE: (button.new_button, "set_radar_fw_stage_button"),
     CONF_TARGET_TRACKING: (text_sensor_.new_text_sensor, "set_target_tracking_sensor"),
@@ -365,6 +383,8 @@ async def to_code(config):
 
     if CONF_RADAR_FIRMWARE_URL in config:
         cg.add(var.set_radar_firmware_url(config[CONF_RADAR_FIRMWARE_URL]))
+        cg.add_define("USE_RADAR_FW_HTTP")
+        cg.add_library("esp_http_client", None)
 
     if CONF_RADAR_RESET_PIN in config:
         reset_pin = await cg.gpio_pin_expression(config[CONF_RADAR_RESET_PIN])

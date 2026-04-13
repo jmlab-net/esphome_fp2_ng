@@ -227,6 +227,24 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
+class FP2ClearEdgeButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
+class FP2ClearInterferenceButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
 class FP2RadarOtaButton : public button::Button {
 public:
   void set_parent(FP2Component *parent) { parent_ = parent; }
@@ -291,6 +309,14 @@ public:
     calibrate_interference_button_ = btn;
     btn->set_parent(this);
   }
+  void set_clear_edge_button(FP2ClearEdgeButton *btn) {
+    clear_edge_button_ = btn;
+    btn->set_parent(this);
+  }
+  void set_clear_interference_button(FP2ClearInterferenceButton *btn) {
+    clear_interference_button_ = btn;
+    btn->set_parent(this);
+  }
   void set_radar_ota_button(FP2RadarOtaButton *btn) {
     radar_ota_button_ = btn;
     btn->set_parent(this);
@@ -298,6 +324,8 @@ public:
 
   void trigger_edge_calibration();
   void trigger_interference_calibration();
+  void clear_edge_calibration();
+  void clear_interference_calibration();
   void trigger_radar_ota();
   void trigger_radar_fw_stage();
   void set_radar_firmware_url(const std::string &url) { radar_firmware_url_ = url; }
@@ -446,6 +474,8 @@ protected:
   FP2LocationSwitch *location_report_switch_{nullptr};
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
+  FP2ClearEdgeButton *clear_edge_button_{nullptr};
+  FP2ClearInterferenceButton *clear_interference_button_{nullptr};
   FP2RadarOtaButton *radar_ota_button_{nullptr};
   FP2RadarFwStageButton *radar_fw_stage_button_{nullptr};
   bool location_reporting_active_{false};

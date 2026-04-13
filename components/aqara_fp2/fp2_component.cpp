@@ -7,7 +7,9 @@
 #include <cstdint>
 #include <vector>
 #include <esp_flash.h>
+#ifdef USE_RADAR_FW_HTTP
 #include <esp_http_client.h>
+#endif
 
 namespace esphome {
 namespace aqara_fp2 {
@@ -89,6 +91,38 @@ void FP2Component::trigger_interference_calibration() {
 void FP2CalibrateEdgeButton::press_action() {
   if (this->parent_ != nullptr) {
     this->parent_->trigger_edge_calibration();
+  }
+}
+
+void FP2ClearEdgeButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->clear_edge_calibration();
+  }
+}
+
+void FP2ClearInterferenceButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->clear_interference_calibration();
+  }
+}
+
+void FP2Component::clear_edge_calibration() {
+  ESP_LOGI(TAG, "Clearing edge/room boundary calibration (sending empty grid)...");
+  std::vector<uint8_t> empty_grid(40, 0x00);
+  enqueue_command_blob2_(AttrId::EDGE_MAP, empty_grid);
+  if (edge_label_grid_sensor_ != nullptr) {
+    GridMap empty{};
+    edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(empty));
+  }
+}
+
+void FP2Component::clear_interference_calibration() {
+  ESP_LOGI(TAG, "Clearing interference calibration (sending empty grid)...");
+  std::vector<uint8_t> empty_grid(40, 0x00);
+  enqueue_command_blob2_(AttrId::INTERFERENCE_MAP, empty_grid);
+  if (interference_grid_sensor_ != nullptr) {
+    GridMap empty{};
+    interference_grid_sensor_->publish_state(grid_to_hex_card_format(empty));
   }
 }
 
@@ -720,7 +754,6 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 case 0: state_str = "awake"; break;
                 case 1: state_str = "light"; break;
                 case 2: state_str = "deep"; break;
-                case 3: state_str = "rem"; break;
                 default: state_str = "unknown"; break;
             }
             ESP_LOGI(TAG, "Sleep state: %u (%s)", state, state_str);
@@ -1281,6 +1314,7 @@ void FP2RadarFwStageButton::press_action() {
 }
 
 void FP2Component::trigger_radar_fw_stage() {
+#ifdef USE_RADAR_FW_HTTP
   if (radar_firmware_url_.empty()) {
     ESP_LOGE(TAG, "Stage firmware: no radar_firmware_url configured");
     return;
@@ -1298,6 +1332,9 @@ void FP2Component::trigger_radar_fw_stage() {
   } else {
     ESP_LOGE(TAG, "Firmware staging failed");
   }
+#else
+  ESP_LOGE(TAG, "Stage firmware: HTTP download not available (radar_firmware_url not configured at build time)");
+#endif
 }
 
 uint16_t FP2Component::xmodem_crc16_(const uint8_t *data, size_t len) {
@@ -1354,6 +1391,7 @@ uint32_t FP2Component::ota_detect_firmware_size_() {
   return 0;  // Partition is empty
 }
 
+#ifdef USE_RADAR_FW_HTTP
 bool FP2Component::ota_download_firmware_() {
   if (radar_firmware_url_.empty()) {
     ESP_LOGE(TAG, "OTA: no radar_firmware_url configured");
@@ -1472,6 +1510,7 @@ bool FP2Component::ota_download_firmware_() {
   ESP_LOGI(TAG, "OTA: firmware downloaded and verified (%u bytes)", written);
   return true;
 }
+#endif  // USE_RADAR_FW_HTTP
 
 void FP2Component::trigger_radar_ota() {
   if (ota_state_ != OtaState::IDLE) {
@@ -1484,6 +1523,7 @@ void FP2Component::trigger_radar_ota() {
   // Check if firmware exists on flash
   ota_firmware_size_ = ota_detect_firmware_size_();
 
+#ifdef USE_RADAR_FW_HTTP
   // If no firmware on flash but URL configured, download it
   if (ota_firmware_size_ == 0 && !radar_firmware_url_.empty()) {
     ESP_LOGI(TAG, "OTA: no firmware on flash, downloading from configured URL...");
@@ -1493,6 +1533,7 @@ void FP2Component::trigger_radar_ota() {
     }
     ota_firmware_size_ = ota_detect_firmware_size_();
   }
+#endif
 
   if (ota_firmware_size_ == 0) {
     ESP_LOGE(TAG, "OTA ABORTED: no valid radar firmware available.");
