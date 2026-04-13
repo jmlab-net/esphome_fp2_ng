@@ -754,32 +754,35 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::SLEEP_DATA:
-        // Sleep tracking data: BLOB2 containing 3 x uint32 (12 bytes).
-        // Stock firmware (radar_sleep_data @ 0x400e47c4) does a raw memcpy
-        // into 3 x uint32 at Ram400d1484 — confirmed LE byte order.
-        // Field order [heart_rate, resp_rate, body_movement] is from the
-        // Aqara cloud API docs, NOT verified from the firmware binary.
-        // TODO: validate field order with real sleep data.
+        // Sleep tracking data: BLOB2 containing IEEE 754 floats in LE byte order.
+        // Confirmed from radar firmware debug strings at 0x1a1394:
+        //   "heartRate = %.0f"    (offset 0, 4 bytes LE float)
+        //   "breathRate = %.0f"   (offset 4, 4 bytes LE float)
+        //   "heartDev = %.0f"     (offset 8, 4 bytes LE float — heart rate deviation)
+        //   "breathingDev = %.0f" (offset 12, 4 bytes LE float — breath deviation)
+        // Stock ESP32 firmware copies first 12 bytes (3 floats), drops breathingDev.
+        // Radar firmware built from TI Vital Signs demo at:
+        //   C:/ti/mmwave_industrial_toolbox_4_11_0/labs/Vital_Signs/
         if (payload.size() >= 5 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 12 && payload.size() >= 17) {
-                // Parse as 3 little-endian uint32 values (radar-native byte order)
-                uint32_t heart_rate = payload[5] | ((uint32_t)payload[6] << 8)
-                                    | ((uint32_t)payload[7] << 16) | ((uint32_t)payload[8] << 24);
-                uint32_t resp_rate = payload[9] | ((uint32_t)payload[10] << 8)
-                                   | ((uint32_t)payload[11] << 16) | ((uint32_t)payload[12] << 24);
-                uint32_t body_move = payload[13] | ((uint32_t)payload[14] << 8)
-                                   | ((uint32_t)payload[15] << 16) | ((uint32_t)payload[16] << 24);
-                ESP_LOGI(TAG, "Sleep data: heart=%u bpm, resp=%u rpm, movement=%u",
-                         heart_rate, resp_rate, body_move);
+                // Parse as LE IEEE 754 floats (radar is ARM Cortex-R4F, LE)
+                float heart_rate, resp_rate, heart_dev;
+                memcpy(&heart_rate, &payload[5], 4);
+                memcpy(&resp_rate, &payload[9], 4);
+                memcpy(&heart_dev, &payload[13], 4);
+                ESP_LOGI(TAG, "Sleep data: heart=%.1f bpm, resp=%.1f br/min, heartDev=%.1f",
+                         heart_rate, resp_rate, heart_dev);
                 if (heart_rate_sensor_ != nullptr) {
-                    heart_rate_sensor_->publish_state((float)heart_rate);
+                    heart_rate_sensor_->publish_state(heart_rate);
                 }
                 if (respiration_rate_sensor_ != nullptr) {
-                    respiration_rate_sensor_->publish_state((float)resp_rate);
+                    respiration_rate_sensor_->publish_state(resp_rate);
                 }
                 if (body_movement_sensor_ != nullptr) {
-                    body_movement_sensor_->publish_state((float)body_move);
+                    // Third field is heart rate deviation, not "body movement"
+                    // Repurposed as a sleep quality indicator
+                    body_movement_sensor_->publish_state(heart_dev);
                 }
             } else {
                 // Log raw hex for unexpected sizes
