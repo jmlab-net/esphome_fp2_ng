@@ -607,6 +607,56 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         }
         break;
 
+    case AttrId::ZONE_PEOPLE_NUMBER:
+        // Native per-zone people count from radar
+        if (payload.size() >= 5 && payload[2] == 0x01) {
+            uint8_t zone_id = payload[3];
+            uint8_t count = payload[4];
+            ESP_LOGD(TAG, "Zone People Number: Zone %d = %u", zone_id, count);
+            for (auto &z : zones_) {
+                if (z->id == zone_id && z->zone_people_count_sensor != nullptr) {
+                    float current = z->zone_people_count_sensor->get_raw_state();
+                    if (std::isnan(current) || (int)current != count) {
+                        z->zone_people_count_sensor->publish_state((float)count);
+                    }
+                    break;
+                }
+            }
+        }
+        break;
+
+    case AttrId::FALL_DETECTION:
+        if (payload.size() >= 4 && payload[2] == 0x00) {
+            uint8_t state = payload[3];
+            ESP_LOGI(TAG, "Fall detection report: %u", state);
+            if (fall_detection_sensor_ != nullptr) {
+                fall_detection_sensor_->publish_state(state != 0);
+            }
+        }
+        break;
+
+    case AttrId::TARGET_POSTURE:
+        if (payload.size() >= 5 && payload[2] == 0x01) {
+            uint8_t zone_id = payload[3];
+            uint8_t posture = payload[4];
+            const char *posture_str;
+            switch (posture) {
+                case 0: posture_str = "none"; break;
+                case 1: posture_str = "standing"; break;
+                case 2: posture_str = "sitting"; break;
+                case 3: posture_str = "lying"; break;
+                default: posture_str = "unknown"; break;
+            }
+            ESP_LOGD(TAG, "Target Posture: Zone %d = %s", zone_id, posture_str);
+            for (auto &z : zones_) {
+                if (z->id == zone_id && z->posture_sensor != nullptr) {
+                    z->posture_sensor->publish_state(posture_str);
+                    break;
+                }
+            }
+        }
+        break;
+
     case AttrId::ZONE_PRESENCE:  // Zone Presence
         // Payload: [SubID 2B] [Type 0x01(UINT16)] [ValH] [ValL]
         // ValH = ZoneID, ValL = State (1=Occ, 0=Empty)
