@@ -805,7 +805,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             uint8_t zone_id = payload[3];
             uint8_t state = payload[4];
             if (zone_id == 0) break;  // Zone 0 is invalid (stock rejects it)
-            ESP_LOGD(TAG, "Zone Presence Report: Zone %d = %s", zone_id, state ? "ON" : "OFF");
+            ESP_LOGI(TAG, "Zone Presence Report: Zone %d = %s (raw=%u)", zone_id, state ? "ON" : "OFF", state);
 
             for (auto &z : zones_) {
                 if (z->id == zone_id) {
@@ -978,8 +978,11 @@ void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &
   if (payload.size() == 2) {
     handle_reverse_read_request_(attr_id);
   } else {
-    // Normal Response with data (currently unused)
-    ESP_LOGD(TAG, "Received Response for 0x%04X with %d bytes", (uint16_t) attr_id, payload.size());
+    // Responses with data — route through report handler since some SubIDs
+    // (e.g. zone presence 0x0142) may arrive as RESPONSE instead of REPORT
+    ESP_LOGD(TAG, "Response with data for 0x%04X (%d bytes) — routing to report handler",
+             (uint16_t) attr_id, payload.size());
+    handle_report_(attr_id, payload);
   }
 }
 
