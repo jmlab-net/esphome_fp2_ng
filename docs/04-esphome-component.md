@@ -84,6 +84,8 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `location_report_switch` | switch | — | Show/hide target tracking data (see below) |
 | `calibrate_edge` | button | diagnostic | Trigger edge boundary auto-calibration |
 | `calibrate_interference` | button | diagnostic | Trigger interference auto-calibration |
+| `radar_fw_stage` | button | diagnostic | **EXPERIMENTAL** — Stage radar firmware from URL to flash |
+| `radar_ota` | button | diagnostic | **EXPERIMENTAL** — Flash staged firmware to radar via XMODEM |
 | `radar_temperature` | sensor | temperature | Radar chip temperature in Celsius |
 | `radar_software_version` | text_sensor | diagnostic | Radar firmware build number |
 | `mounting_position_sensor` | text_sensor | diagnostic | Current mount position string |
@@ -162,6 +164,85 @@ Two button entities trigger the radar's built-in auto-detection:
 - **`calibrate_interference`** — writes `INTERFERENCE_AUTO_ENABLE` (0x0139) = true.
   The radar identifies interference sources and sends back
   `INTERFERENCE_AUTO_SET` (0x0125) with the detected interference grid.
+
+## Radar Firmware OTA (EXPERIMENTAL)
+
+> **WARNING: This feature is untested and experimental. Incorrect use could
+> brick the radar module, requiring physical access to recover. Use at your
+> own risk. Do not use unless you understand the implications.**
+
+The component can update the TI IWR6843AOP radar's firmware via XMODEM-1K
+over the existing UART connection. This is the same mechanism the stock
+Aqara firmware uses to apply radar updates from the cloud.
+
+### Prerequisites
+
+- A valid TI IWR6843 firmware binary (must start with `MSTR` header)
+- The firmware file must be extracted from a stock Aqara flash dump
+  (offset 0x433000, typically ~2.4MB)
+- **There is no way to read the radar's current firmware back** — XMODEM is
+  one-way. Back up your stock flash dump before experimenting.
+
+### How It Works
+
+Two-step process for safety:
+
+1. **Stage**: Downloads firmware from a URL to the ESP32's flash storage.
+   Validates the MSTR header before writing. Does not touch the radar.
+2. **Flash**: Reads staged firmware from ESP32 flash and transfers it to the
+   radar via XMODEM-1K. The radar enters bootloader mode, receives the
+   firmware, validates it, and restarts.
+
+### Configuration
+
+```yaml
+aqara_fp2:
+  # URL to a TI IWR6843 firmware binary (MSTR format)
+  # Place the file in HA's /config/www/ folder and reference it here:
+  radar_firmware_url: "http://homeassistant.local:8123/local/radar_firmware.bin"
+
+  radar_fw_stage:
+    name: "Stage Radar Firmware"   # Downloads URL → ESP32 flash
+  radar_ota:
+    name: "Flash Radar Firmware"   # Transfers flash → radar via XMODEM
+```
+
+### Safety Checks
+
+- Firmware must have valid `MSTR` magic header (TI format)
+- Minimum size 1KB, maximum 4MB
+- Flash is verified after write
+- The OTA button refuses to proceed without valid staged firmware
+- During XMODEM transfer, do **not** power off the device
+
+### Extracting Firmware from Stock Dump
+
+```python
+# Extract radar firmware from a full flash dump
+with open('stock_flash.bin', 'rb') as f:
+    f.seek(0x433000)
+    data = f.read(4 * 1024 * 1024)
+
+# Trim trailing 0xFF (erased flash)
+size = len(data)
+while size > 0 and data[size-1] == 0xFF:
+    size -= 1
+
+with open('radar_firmware.bin', 'wb') as f:
+    f.write(data[:size])
+```
+
+### Known Limitations
+
+- **Untested** — the XMODEM transfer has been implemented from reverse
+  engineering but has not been validated on real hardware
+- **No firmware source** — Aqara distributes radar firmware via their cloud
+  only. The only known source is extracting from a stock flash dump.
+- **No rollback** — if the transfer fails partway, the radar may be in an
+  indeterminate state. A power cycle should recover it to the previous
+  firmware (the radar validates before applying), but this is unconfirmed.
+- **No version check** — the component does not verify whether the firmware
+  is newer or compatible with the current radar hardware revision.
 
 ## OPT3001 Light Sensor
 
@@ -258,6 +339,13 @@ aqara_fp2:
     name: "Calibrate Room Boundaries"
   calibrate_interference:
     name: "Calibrate Interference"
+
+  # Radar firmware OTA (EXPERIMENTAL — see docs)
+  # radar_firmware_url: "http://homeassistant.local:8123/local/radar_firmware.bin"
+  # radar_fw_stage:
+  #   name: "Stage Radar Firmware"
+  # radar_ota:
+  #   name: "Flash Radar Firmware"
 
   # Global presence/motion
   global_zone:

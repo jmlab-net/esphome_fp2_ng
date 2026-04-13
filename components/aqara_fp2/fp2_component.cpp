@@ -1197,6 +1197,12 @@ void FP2Component::dump_config() {
       LOG_BINARY_SENSOR("  ", "Zone Motion", z->motion_sensor);
     }
   }
+  if (radar_ota_button_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Radar OTA: EXPERIMENTAL (untested)");
+    if (!radar_firmware_url_.empty()) {
+      ESP_LOGCONFIG(TAG, "  Firmware URL: %s", radar_firmware_url_.c_str());
+    }
+  }
 }
 
 JsonDocument FP2Component::get_map_config_json() {
