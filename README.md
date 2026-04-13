@@ -1,40 +1,65 @@
 # esphome_fp2_ng
 
-Custom ESPHome firmware and Home Assistant card for the Aqara FP2 Presence Sensor, with per-zone people counting.
+Custom ESPHome firmware for the Aqara FP2 Presence Sensor with full feature extraction: per-zone people counting, sleep monitoring, fall detection, posture tracking, and factory-calibrated light sensing.
 
-Forked from [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2) with bug fixes, new features, and comprehensive documentation.
+Forked from [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2) with extensive bug fixes, new features, and comprehensive reverse engineering documentation.
 
 ![Card screenshot](images/card_screenshot.png)
 
 ## What This Does
 
-Replaces the stock ESP32 firmware on the Aqara FP2 with ESPHome, while keeping the radar firmware intact. This gives you **local-only** access to data that Aqara normally locks behind their cloud:
+Replaces the stock ESP32 firmware on the Aqara FP2 with ESPHome, while keeping the TI IWR6843AOP radar firmware intact. This gives you **local-only** access to data that Aqara normally locks behind HomeKit and their cloud:
 
-- **Per-zone people counting** — how many people are in each zone, not just binary presence
+- **Per-zone people counting** — native radar counting (SubID 0x0175), not position approximation
 - **Global people count** — total detected persons
-- **Real-time target tracking** — individual target positions, velocity, classification
-- **Zone presence and motion** — per-zone binary sensors
-- **Radar diagnostics** — temperature, firmware version
+- **Sleep monitoring** — heart rate, respiration rate, body movement
+- **Fall detection** — binary sensor for fall events
+- **Posture tracking** — per-zone standing/sitting/lying detection
+- **Walking distance** — cumulative distance sensor
+- **Real-time target tracking** — individual target positions with configurable publish rate
+- **Zone presence and motion** — per-zone binary sensors with presence inference
+- **Factory-calibrated light sensor** — OPT3001 with per-unit NVS calibration
+- **Accelerometer corrections** — factory calibration from NVS
+- **Radar firmware OTA** — XMODEM-1K update mechanism (experimental)
+- **Auto-calibration** — room boundary and interference detection buttons
 
 All data stays local. No Aqara cloud dependency.
 
 ## Changes from Upstream
 
-See [docs/06-changelog.md](docs/06-changelog.md) for full details.
+See [docs/06-changelog.md](docs/06-changelog.md) for the original changelog.
 
 **Bug fixes:**
-- Switch fall-through bug in report handler (malformed packets misinterpreted)
+- Switch fall-through in report handler (malformed packets misinterpreted)
 - Null pointer crashes when global zone sensors not configured
 - ESP-IDF 5.5+ compilation error (`driver/i2c.h` removed)
 - Wall mounting mode broken in Lovelace card
 - PI constant typo in accelerometer
-- Dead calibration code in accelerometer
+- Presence detection state interpretation (0=empty, non-zero=occupied)
+- Zone presence inference from motion/people count (0x0142 may not fire on boot)
+- Stale sensor states cleared on presence-off cascade (sleep, people count, posture)
+- Location reporting always enabled at radar level (people counting dependency)
 
 **New features:**
-- Global people count sensor (`people_count`)
-- Per-zone people count sensors (`zone_people_count`)
-- Zone motion handler (was commented out)
-- I2C bus scan diagnostic (for light sensor discovery)
+- Global people count sensor
+- Per-zone native people counting (SubID 0x0175)
+- Per-zone posture tracking (standing/sitting/lying)
+- Fall detection binary sensor
+- Sleep monitoring: state, presence, heart rate, respiration, body movement
+- Walking distance sensor
+- OPT3001 ambient light with factory NVS calibration
+- Accelerometer factory NVS corrections
+- Configurable target tracking publish rate (default 500ms)
+- Radar firmware OTA via XMODEM-1K (experimental)
+- Data-bearing RESPONSE frame routing (fixes missing zone reports)
+
+**Reverse engineering:**
+- Complete UART protocol spec with 43+ SubIDs documented
+- SubID 0x0203 zone config sync mechanism (fully traced)
+- Radar OTA XMODEM-1K protocol (all parameters, function addresses)
+- NVS lux calibration algorithm (two-range piecewise linear)
+- Handler registration table (139 entries, 32 bytes each)
+- Stock firmware init sequence and radar boot timing
 
 ## Quick Start
 
@@ -42,11 +67,18 @@ See [docs/06-changelog.md](docs/06-changelog.md) for full details.
 
 See [FLASHING.md](FLASHING.md) for hardware disassembly, wiring, and backup instructions.
 
+> **Important:** Back up the full flash before flashing ESPHome. The stock flash
+> contains factory calibration data and radar firmware that cannot be recovered.
+
 ### 2. ESPHome Configuration
 
 ```yaml
 esphome:
   name: fp2-bedroom
+  on_boot:
+    priority: 600
+    then:
+      - delay: 2s
 
 esp32:
   board: esp32-solo1
@@ -62,6 +94,7 @@ esp32:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  power_save_mode: light
 
 api:
   encryption:
@@ -93,6 +126,8 @@ external_components:
 
 aqara_fp2_accel:
   id: fp2_accel
+  light_sensor:
+    name: "Ambient Light"
 
 aqara_fp2:
   id: fp2
@@ -101,37 +136,54 @@ aqara_fp2:
   radar_reset_pin: GPIO13
   mounting_position: left_corner  # wall | left_corner | right_corner
 
+  # Global sensors
   people_count:
     name: "Total People"
-
   fall_detection:
     name: "Fall Detected"
-
   radar_temperature:
     name: "Radar Temperature"
-
   radar_software_version:
     name: "Radar Version"
 
+  # Sleep monitoring
+  sleep_state:
+    name: "Sleep State"
+  sleep_presence:
+    name: "Sleep Presence"
+  heart_rate:
+    name: "Heart Rate"
+  respiration_rate:
+    name: "Respiration Rate"
+  body_movement:
+    name: "Body Movement"
+
+  # Walking distance
+  walking_distance:
+    name: "Walking Distance"
+
+  # Target tracking (throttled to 2Hz by default)
   target_tracking:
     name: "Targets"
-
+  target_tracking_interval: 500ms
   location_report_switch:
     name: "Report Targets"
 
+  # Auto-calibration
   calibrate_edge:
     name: "Calibrate Room Boundaries"
-
   calibrate_interference:
     name: "Calibrate Interference"
 
+  # Global presence/motion
   global_zone:
-    presence_sensitivity: medium
+    presence_sensitivity: medium  # low | medium | high
     presence:
       name: "Global Presence"
     motion:
       name: "Global Motion"
 
+  # Detection zones
   zones:
     - id: bed_zone
       grid: |-
@@ -177,7 +229,7 @@ light:
 ### 3. Lovelace Card (Optional)
 
 Install via HACS:
-1. HACS → Frontend → Custom repositories
+1. HACS > Frontend > Custom repositories
 2. Add `https://github.com/JameZUK/esphome_fp2_ng`, category: Dashboard
 3. Install and restart HA
 
@@ -195,30 +247,48 @@ title: Bedroom FP2
 | Config Key | Type | Description |
 |------------|------|-------------|
 | `people_count` | sensor | Total detected person count |
-| `fall_detection` | binary_sensor | Fall detected (on/off) |
-| `global_zone.presence` | binary_sensor | Overall presence |
-| `global_zone.motion` | binary_sensor | Overall motion |
+| `fall_detection` | binary_sensor | Fall detected |
+| `sleep_state` | text_sensor | none / awake / light / deep / rem |
+| `sleep_presence` | binary_sensor | Sleep zone occupancy |
+| `heart_rate` | sensor (bpm) | Heart rate from sleep monitoring |
+| `respiration_rate` | sensor (br/min) | Respiration rate from sleep monitoring |
+| `body_movement` | sensor | Body movement from sleep monitoring |
+| `walking_distance` | sensor (m) | Cumulative walking distance |
+| `global_zone.presence` | binary_sensor | Overall presence (0=empty, non-zero=occupied) |
+| `global_zone.motion` | binary_sensor | Overall motion (even=active, odd=inactive) |
 | `target_tracking` | text_sensor | Base64 target data (diagnostic) |
-| `location_report_switch` | switch | Toggle location tracking |
+| `target_tracking_interval` | config | Publish rate, default 500ms |
+| `location_report_switch` | switch | Show/hide target data in HA |
 | `calibrate_edge` | button | Trigger room boundary auto-calibration |
 | `calibrate_interference` | button | Trigger interference auto-calibration |
 | `radar_temperature` | sensor | Radar chip temperature (diagnostic) |
-| `radar_software_version` | text_sensor | Radar firmware version (diagnostic) |
+| `radar_software_version` | text_sensor | Radar firmware build number |
 
 ### Per Zone
 
 | Config Key | Type | Description |
 |------------|------|-------------|
-| `presence` | binary_sensor | Zone occupancy |
-| `motion` | binary_sensor | Zone motion |
-| `zone_people_count` | sensor | Number of people in zone (native radar counting) |
-| `posture` | text_sensor | Body posture: none, standing, sitting, lying |
+| `presence` | binary_sensor | Zone occupancy (inferred from motion + people count) |
+| `motion` | binary_sensor | Zone motion (even=active, odd=inactive) |
+| `zone_people_count` | sensor | Native per-zone people count from radar |
+| `posture` | text_sensor | none / standing / sitting / lying |
 
 ### Accelerometer / Light Sensor
 
 | Config Key | Type | Description |
 |------------|------|-------------|
-| `light_sensor` | sensor | OPT3001 ambient light (lux) |
+| `light_sensor` | sensor (lux) | OPT3001 ambient light with factory NVS calibration |
+
+### Radar Firmware OTA (EXPERIMENTAL)
+
+> **WARNING: Untested. Incorrect use could brick the radar module.**
+> See [docs/04-esphome-component.md](docs/04-esphome-component.md) for full details.
+
+| Config Key | Type | Description |
+|------------|------|-------------|
+| `radar_firmware_url` | config | URL to TI IWR6843 firmware binary (MSTR format) |
+| `radar_fw_stage` | button | Download firmware from URL to ESP32 flash |
+| `radar_ota` | button | Flash staged firmware to radar via XMODEM-1K |
 
 ## Zone Grid
 
@@ -245,22 +315,32 @@ grid: |-
   ..............
 ```
 
+## Factory Calibration
+
+The component automatically reads per-unit calibration data from the factory NVS partition (`fctry`) if it was preserved during flashing:
+
+- **Lux calibration**: two-range piecewise linear correction for the OPT3001
+- **Accelerometer corrections**: per-axis offset compensation
+
+This data is written during Aqara manufacturing and is unique to each unit. Back up your full flash before flashing ESPHome to preserve it.
+
 ## Documentation
 
 Comprehensive technical documentation is in the [`docs/`](docs/) directory:
 
 | Document | Contents |
 |----------|----------|
-| [01-hardware.md](docs/01-hardware.md) | Hardware reference — ESP32, radar, accelerometer, GPIO map |
-| [02-uart-protocol.md](docs/02-uart-protocol.md) | Complete UART protocol spec — frames, opcodes, all SubIDs |
+| [01-hardware.md](docs/01-hardware.md) | Hardware reference — ESP32, radar, accelerometer, light sensor, GPIO map |
+| [02-uart-protocol.md](docs/02-uart-protocol.md) | Complete UART protocol spec — frames, opcodes, 43+ SubIDs, zone sync |
 | [03-firmware.md](docs/03-firmware.md) | Firmware architecture — stock vs ESPHome, flash layout, data flow |
-| [04-esphome-component.md](docs/04-esphome-component.md) | ESPHome component reference — entities, config, examples |
+| [04-esphome-component.md](docs/04-esphome-component.md) | ESPHome component reference — all entities, config, radar OTA, examples |
 | [05-development.md](docs/05-development.md) | Development guide — building, adding attributes, known limitations |
 | [06-changelog.md](docs/06-changelog.md) | All changes from upstream |
+| [07-firmware-analysis.md](docs/07-firmware-analysis.md) | Ghidra RE workflow — OTA protocol, NVS calibration, handler tables |
 
 ## Requirements
 
-- ESPHome 2026.2+ (ESP-IDF framework)
+- ESPHome 2024.6+ (ESP-IDF framework)
 - Home Assistant 2024.x+ (for card)
 - HACS (recommended for card installation)
 
@@ -268,9 +348,9 @@ Comprehensive technical documentation is in the [`docs/`](docs/) directory:
 
 The FP2 contains:
 - **ESP32-SOLO1** (single-core) — runs this firmware
-- **TI IWR6843AOP** — 60GHz mmWave radar (firmware untouched)
-- **MiraMEMS da218B** — accelerometer for orientation
-- **Unknown IC** — light sensor (not yet implemented, [investigation in progress](docs/01-hardware.md))
+- **TI IWR6843AOP** — 60GHz mmWave radar (firmware untouched by default)
+- **MiraMEMS da218B** — accelerometer for orientation (I2C 0x27)
+- **TI OPT3001** — ambient light sensor (I2C 0x44), factory-calibrated via NVS
 
 Flashing requires soldering to UART test points. See [FLASHING.md](FLASHING.md).
 
@@ -282,4 +362,4 @@ Flashing requires soldering to UART test points. See [FLASHING.md](FLASHING.md).
 
 ## Disclaimer
 
-This project is not affiliated with or endorsed by Aqara. Use at your own risk. Flashing custom firmware will void your warranty and may brick the device if done incorrectly. Always back up the stock firmware first.
+This project is not affiliated with or endorsed by Aqara, Texas Instruments, or Apple. Use at your own risk. Flashing custom firmware will void your warranty and may brick the device if done incorrectly. Always back up the stock firmware first.
