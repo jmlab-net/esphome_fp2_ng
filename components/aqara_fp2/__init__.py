@@ -60,6 +60,7 @@ CONF_TARGET_TYPE_ENABLE = "target_type_enable"
 CONF_DWELL_TIME_ENABLE = "dwell_time_enable"
 CONF_WALKING_DISTANCE_ENABLE = "walking_distance_enable"
 CONF_TARGET_TRACKING = "target_tracking"
+CONF_TARGET_TRACKING_INTERVAL = "target_tracking_interval"
 CONF_LOCATION_REPORT_SWITCH = "location_report_switch"
 CONF_RADAR_TEMPERATURE = "radar_temperature"
 CONF_PRESENCE = "presence"
@@ -208,6 +209,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_EDGE_GRID): parse_ascii_grid,
 
             cv.Optional(CONF_TARGET_TRACKING): text_sensor_.text_sensor_schema(entity_category=ENTITY_CATEGORY_DIAGNOSTIC),
+            cv.Optional(CONF_TARGET_TRACKING_INTERVAL, default="500ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_LOCATION_REPORT_SWITCH): switch.switch_schema(
                 FP2LocationSwitch
             ),
@@ -376,6 +378,9 @@ async def to_code(config):
         if key in config:
             sens = await new(config[key])
             cg.add(getattr(var, funcName)(sens))
+
+    if CONF_TARGET_TRACKING_INTERVAL in config:
+        cg.add(var.set_target_tracking_interval(config[CONF_TARGET_TRACKING_INTERVAL]))
 
     # Generate map config JSON data at compile time
     map_config_data = {

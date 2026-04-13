@@ -257,6 +257,9 @@ public:
   void set_target_tracking_sensor(text_sensor::TextSensor *sensor) {
     target_tracking_sensor_ = sensor;
   }
+  void set_target_tracking_interval(uint32_t ms) {
+    target_tracking_interval_ms_ = ms;
+  }
   void set_location_report_switch(FP2LocationSwitch *sw) {
     location_report_switch_ = sw;
     sw->set_parent(this);
@@ -415,6 +418,8 @@ protected:
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   bool location_reporting_active_{false};
+  uint32_t target_tracking_interval_ms_{500};
+  uint32_t last_target_publish_millis_{0};
 
   // Grid text sensors
   text_sensor::TextSensor *edge_label_grid_sensor_{nullptr};

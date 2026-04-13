@@ -925,11 +925,13 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
                        payload.begin() + offset + 14);
   }
 
-  // Base64 encode the binary data
-  std::string base64_str = esphome::base64_encode(binary_data);
-
-  if (this->target_tracking_sensor_ != nullptr) {
+  // Throttle publishes to avoid flooding HA (radar streams at 10-20Hz)
+  uint32_t now = millis();
+  if (this->target_tracking_sensor_ != nullptr &&
+      (now - last_target_publish_millis_ >= target_tracking_interval_ms_)) {
+    std::string base64_str = esphome::base64_encode(binary_data);
     this->target_tracking_sensor_->publish_state(base64_str);
+    last_target_publish_millis_ = now;
   }
 
   // Position-based zone people counting is available as a fallback but
