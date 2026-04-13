@@ -163,21 +163,66 @@ Compatibility table at DROM `3f40a6f4`: versions `3.1.85` through `3.23.85+`.
 The `.85` suffix is shared between ESP32 app (4.x.85) and radar (3.x.85)
 firmware, likely a product variant identifier.
 
-### Priority 1: Radar OTA (XMODEM)
+### Completed: Radar OTA (XMODEM-1K)
 
-**Status: MECHANISM UNDERSTOOD, implementation pending**
+**Status: FULLY REVERSE ENGINEERED, implementation pending**
 
-Key findings from RE:
-- Source: `apps/user/ota/radar_ota.c` and `apps/user/ota/xmodem.c`
-- `mcu_ota` partition: 4MB at offset 0x433000, sub_type 0xFE
-- SubID `0x0127` (ota_set_flag) triggers radar bootloader mode
-- Transfer uses XMODEM with retry, CAN, and timeout support
-- Functions: `radar_ota_start`, `xmodem_new`, `xmodem_transfer`, `xmodem_end`
-- String addresses in Ghidra: `3f40b229` (radar_ota.c), `3f40b30c` (start),
-  `3f40b3c0` (xmodem functions)
+Complete OTA sequence decompiled from stock firmware:
 
-**Next steps**: Decompile `radar_ota_start` to get the exact sequence — what
-command puts the radar in bootloader mode, XMODEM parameters, completion signal.
+**Phase 1 — Trigger bootloader:**
+Send `WRITE SubID=0x0127 DataType=0x04(BOOL) Value=0x01` via standard
+Aqara UART protocol at 890000 baud.
+
+**Phase 2 — XMODEM-1K handshake:**
+Radar enters bootloader and sends `'C'` (0x43) requesting CRC mode.
+Wait up to 20 seconds for the handshake character.
+
+**Phase 3 — Transfer loop:**
+Send 1029-byte packets: `[STX(0x02)][BlkNum][~BlkNum][1024 data][CRC16-hi][CRC16-lo]`
+- Block numbers start at 1, wrap at 256
+- CRC: CRC-16/XMODEM (poly 0x1021, init 0x0000) — NOT CRC-16/MODBUS
+- On ACK (0x06): next block. On timeout (3s): retry (max 5). On CAN (0x18): abort if >10
+
+**Phase 4 — End transfer:**
+Send EOT (0x04), wait for ACK. Retry up to 5 times on timeout.
+
+**Key parameters:**
+
+| Parameter | Value |
+|-----------|-------|
+| Block size | 1024 bytes (XMODEM-1K) |
+| Header byte | STX (0x02) |
+| CRC polynomial | 0x1021 (CRC-CCITT) |
+| CRC init | 0x0000 |
+| Start timeout | 20 seconds |
+| Transfer timeout | 3 seconds per block |
+| Max retries/block | 5 |
+| Max CAN before abort | 11 |
+| Packet buffer | 1029 bytes (0x405) |
+
+**Firmware source partition:**
+- Label: `mcu_ota`, type: DATA, sub_type: 0xFE
+- Size: 4MB at flash offset 0x433000
+- Access: `esp_partition_find_first(1, 0xFE, "mcu_ota")`
+
+**Function addresses:**
+
+| Function | Address | Purpose |
+|----------|---------|---------|
+| `radar_ota_start` | 0x400e6f60 | Init OTA, open partition, send 0x0127 |
+| `ota_set_flag_send` | 0x400e6e8c | Sends WRITE 0x0127 BOOL=true |
+| `xmodem_new` | 0x400e7440 | Allocate XMODEM context (28 bytes) |
+| `xmodem_recv` | 0x400e7218 | 3-state XMODEM receive machine |
+| `xmodem_build_packet` | 0x400e702c | Build 1029-byte XMODEM-1K packet |
+| `xmodem_send_eot` | 0x400e7084 | Send EOT with retry |
+| `xmodem_crc16` | 0x400e6fe4 | CRC-16/CCITT calculation |
+| `xmodem_timer` | 0x400e7348 | Timeout handler |
+| `radar_ota_result` | 0x400e6db8 | Completion handler |
+
+**Source files** (from embedded strings):
+- `apps/user/ota/radar_ota.c`
+- `apps/user/ota/xmodem.c`
+- `apps/user/hal/radar.c`
 
 ### Completed: SubID 0x0203 Zone Configuration Sync
 
@@ -223,15 +268,60 @@ Key findings:
 | 0x0166 | REALTIME_COUNT | Also seen in logs as unhandled |
 | 0x0174 | WALK_DISTANCE_ALL | Distance data format and units |
 
-### Priority 3: NVS Lux Calibration
+### Completed: NVS Lux Calibration
 
-The stock firmware stores per-unit calibration coefficients in NVS:
-- `lux_low_k`, `lux_low_b` — low range slope/intercept
-- `lux_high_k`, `lux_high_b` — high range slope/intercept
-- `lux_low_min`, `lux_low_max`, `lux_high_min`, `lux_high_max` — range bounds
+**Status: FULLY REVERSE ENGINEERED**
 
-The NVS partition has been extracted (`fp2_nvs.bin`). Reading these values and
-applying the calibration would improve lux accuracy.
+The stock firmware applies a two-range piecewise linear calibration to
+OPT3001 readings: `calibrated_centilux = raw_centilux * k + b`
+
+**Calibration init** decompiled from `FUN_400e8f8c`. NVS keys are in the
+`"fctry"` (factory) partition, NOT the regular `"nvs"` partition.
+
+**NVS keys and data types:**
+
+| Key | Stored As | Conversion | Description |
+|-----|-----------|------------|-------------|
+| `lux_low_k` | int16 blob | ÷ 1000.0 → float | Low range slope |
+| `lux_low_b` | int16 blob | ÷ 10.0 → float | Low range intercept |
+| `lux_high_k` | int16 blob | ÷ 1000.0 → float | High range slope |
+| `lux_high_b` | int16 blob | ÷ 10.0 → float | High range intercept |
+| `lux_low_min` | int32 blob | direct (centilux) | Low range min bound |
+| `lux_low_max` | int32 blob | direct (centilux) | Low range max / crossover point |
+| `lux_high_min` | int32 blob | direct (centilux) | High range min bound |
+| `lux_high_max` | int32 blob | direct (centilux) | High range max bound |
+
+**Algorithm:**
+```
+if raw_centilux > low_max:
+    calibrated = raw * high_k + high_b
+else:
+    calibrated = raw * low_k + low_b
+result = clamp(calibrated, 0, 83000)  // centilux
+```
+
+**Hardcoded defaults** (when factory NVS has no calibration):
+- Low range: k=3.856, b=1.4
+- High range: k=3.876, b=2.9
+- Crossover at result=160 centilux
+
+**This unit's extracted values** (from `fp2_fctry.bin`):
+```
+Low range:  k=4.143, b=0.9    (5-150 centilux)
+High range: k=4.868, b=-24.9  (160-2000 centilux)
+Accelerometer corrections: x=-19, y=2, z=-22
+```
+
+**Filtering:** 10-sample circular buffer with trimmed mean (discard
+highest and lowest when ≥3 non-zero samples). First 10 readings after
+boot are discarded as warmup.
+
+**Implementation notes:**
+- Factory partition: `esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0xFF, "fctry")`
+- NVS blob format: 2-byte blobs for int16, 4-byte blobs for int32
+- All values in centilux (1/100 lux). Our OPT3001 driver currently
+  reports in lux, so divide the calibrated centilux by 100.
+- The factory NVS is preserved across ESPHome flashing (different partition)
 
 ### Priority 4: 0x03xx Attribute Range
 
