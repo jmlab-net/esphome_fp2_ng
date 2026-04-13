@@ -159,6 +159,10 @@ enum class AttrId : uint16_t {
     REALTIME_PEOPLE                 = 0x0164, // Real-time people data
     ONTIME_PEOPLE_NUMBER            = 0x0165, // Periodic total person count (UINT32)
     REALTIME_COUNT                  = 0x0166, // Real-time count
+    ZONE_PEOPLE_NUMBER              = 0x0175, // Native per-zone count [zone_id<<8|count]
+
+    // --- Fall Detection ---
+    FALL_DETECTION                  = 0x0121, // Fall event state byte
 
     // --- Posture / Activity ---
     TARGET_POSTURE                  = 0x0154, // Target posture reports
