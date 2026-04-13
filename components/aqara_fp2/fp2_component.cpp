@@ -756,17 +756,20 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
     case AttrId::SLEEP_DATA:
         // Sleep tracking data: BLOB2 containing 3 fields
         // From Aqara cloud API: heart rate (bpm), respiration rate (rpm), body movement
-        // Stock firmware copies into 3 x uint32 (12 bytes)
+        // Stock firmware copies raw bytes into 3 x uint32 via memcpy.
+        // BLOB2 content is in the radar's native little-endian byte order
+        // (TI IWR6843 is ARM Cortex-R4, LE), unlike the typed protocol
+        // fields which use big-endian.
         if (payload.size() >= 5 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 12 && payload.size() >= 17) {
-                // Parse as 3 big-endian uint32 values
-                uint32_t heart_rate = ((uint32_t)payload[5] << 24) | ((uint32_t)payload[6] << 16)
-                                    | ((uint32_t)payload[7] << 8) | payload[8];
-                uint32_t resp_rate = ((uint32_t)payload[9] << 24) | ((uint32_t)payload[10] << 16)
-                                   | ((uint32_t)payload[11] << 8) | payload[12];
-                uint32_t body_move = ((uint32_t)payload[13] << 24) | ((uint32_t)payload[14] << 16)
-                                   | ((uint32_t)payload[15] << 8) | payload[16];
+                // Parse as 3 little-endian uint32 values (radar-native byte order)
+                uint32_t heart_rate = payload[5] | ((uint32_t)payload[6] << 8)
+                                    | ((uint32_t)payload[7] << 16) | ((uint32_t)payload[8] << 24);
+                uint32_t resp_rate = payload[9] | ((uint32_t)payload[10] << 8)
+                                   | ((uint32_t)payload[11] << 16) | ((uint32_t)payload[12] << 24);
+                uint32_t body_move = payload[13] | ((uint32_t)payload[14] << 8)
+                                   | ((uint32_t)payload[15] << 16) | ((uint32_t)payload[16] << 24);
                 ESP_LOGI(TAG, "Sleep data: heart=%u bpm, resp=%u rpm, movement=%u",
                          heart_rate, resp_rate, body_move);
                 if (heart_rate_sensor_ != nullptr) {
@@ -821,8 +824,8 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         if (payload.size() >= 7 && payload[2] == 0x02) {
             uint32_t raw = ((uint32_t)payload[3] << 24) | ((uint32_t)payload[4] << 16)
                          | ((uint32_t)payload[5] << 8) | payload[6];
-            // Raw value appears to be in centimetres based on stock firmware's
-            // float conversion and scaling. Convert to metres.
+            // Stock firmware divides by constant 100.0 (at Ram400d0ff4).
+            // Raw value is in centimetres; convert to metres.
             float distance_m = (float)raw / 100.0f;
             ESP_LOGD(TAG, "Walking distance: raw=%u (%.2f m)", raw, distance_m);
             if (walking_distance_sensor_ != nullptr) {
