@@ -309,6 +309,10 @@ void FP2Component::send_next_command_() {
   auto &cmd = command_queue_.front();
   static uint8_t next_tx_seq = 0;
 
+  ESP_LOGD(TAG, "TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
+           (int)cmd.type, (uint16_t)cmd.attr_id, cmd.data.size(),
+           cmd.retry_count, command_queue_.size());
+
   // Build frame: [Sync][Ver][Ver][Seq][Op][Len][Len][Check][Payload][CRC][CRC]
   std::vector<uint8_t> frame;
   frame.push_back(0x55);  // Sync
@@ -528,12 +532,18 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
       last_heartbeat_millis_ = millis();
-      if (payload.size() == 4 && payload[2] == 0x00) {
-        auto ver_str = std::to_string(payload[3]);
-        if (radar_software_sensor_ != nullptr) {
-            if (radar_software_sensor_->state != ver_str) {
-                radar_software_sensor_->publish_state(ver_str);
-            }
+      if (payload.size() >= 4) {
+        ESP_LOGI(TAG, "Radar heartbeat: type=0x%02X version=%u (payload: %02X %02X %02X %02X%s)",
+                 payload[2], payload[3],
+                 payload[0], payload[1], payload[2], payload[3],
+                 payload.size() > 4 ? " ..." : "");
+        if (payload[2] == 0x00) {
+          auto ver_str = std::to_string(payload[3]);
+          if (radar_software_sensor_ != nullptr) {
+              if (radar_software_sensor_->state != ver_str) {
+                  radar_software_sensor_->publish_state(ver_str);
+              }
+          }
         }
       }
       break;
