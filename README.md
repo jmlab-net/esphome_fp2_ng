@@ -12,7 +12,7 @@ Replaces the stock ESP32 firmware on the Aqara FP2 with ESPHome, while keeping t
 
 - **Per-zone people counting** — native radar counting (SubID 0x0175), not position approximation
 - **Global people count** — total detected persons
-- **Sleep monitoring** — heart rate, respiration rate, body movement
+- **Sleep monitoring** — heart rate, respiration rate, heart rate deviation
 - **Fall detection** — binary sensor for fall events
 - **Posture tracking** — per-zone standing/sitting/lying detection
 - **Walking distance** — cumulative distance sensor
@@ -45,7 +45,7 @@ See [docs/06-changelog.md](docs/06-changelog.md) for the original changelog.
 - Per-zone native people counting (SubID 0x0175)
 - Per-zone posture tracking (standing/sitting/lying)
 - Fall detection binary sensor
-- Sleep monitoring: state, presence, heart rate, respiration, body movement
+- Sleep monitoring: state, presence, heart rate, respiration, heart rate deviation
 - Walking distance sensor
 - OPT3001 ambient light with factory NVS calibration
 - Accelerometer factory NVS corrections
@@ -155,8 +155,8 @@ aqara_fp2:
     name: "Heart Rate"
   respiration_rate:
     name: "Respiration Rate"
-  body_movement:
-    name: "Body Movement"
+  heart_rate_deviation:
+    name: "Heart Rate Deviation"
 
   # Walking distance
   walking_distance:
@@ -252,7 +252,7 @@ title: Bedroom FP2
 | `sleep_presence` | binary_sensor | Sleep zone occupancy |
 | `heart_rate` | sensor (bpm) | Heart rate from sleep monitoring |
 | `respiration_rate` | sensor (br/min) | Respiration rate from sleep monitoring |
-| `body_movement` | sensor | Body movement from sleep monitoring |
+| `heart_rate_deviation` | sensor (bpm) | Heart rate deviation/variability from sleep monitoring |
 | `walking_distance` | sensor (m) | Cumulative walking distance |
 | `global_zone.presence` | binary_sensor | Overall presence (0=empty, non-zero=occupied) |
 | `global_zone.motion` | binary_sensor | Overall motion (even=active, odd=inactive) |

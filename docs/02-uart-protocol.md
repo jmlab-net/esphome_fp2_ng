@@ -216,7 +216,7 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
 | 0x0156 | SLEEP_REPORT_ENABLE | BOOL | E→R | Y | Enable sleep reporting |
-| 0x0159 | SLEEP_DATA | BLOB2 | R→E | Y | 3x uint32 **LE**: heart_rate(bpm), resp_rate(br/min), body_movement (field order unverified — see below) |
+| 0x0159 | SLEEP_DATA | BLOB2 | R→E | Y | 3-4x IEEE 754 float **LE**: heartRate, breathRate, heartDev, [breathDev] (confirmed from radar FW) |
 | 0x0161 | SLEEP_STATE | UINT8 | R→E | Y | 0=awake, 1=light, 2=deep, 3=rem |
 | 0x0167 | SLEEP_PRESENCE | UINT8 | R→E | Y | Sleep zone presence (binary_sensor) |
 | 0x0168 | SLEEP_MOUNT_POSITION | UINT8 | E→R | P | Sleep mount pos (defined, unused) |
@@ -234,31 +234,32 @@ This was confirmed by decompiling `radar_sleep_data` (0x400e47c4) in the
 stock firmware: it performs a raw `memcpy` of the BLOB2 content into 3 x
 uint32 on the little-endian ESP32, with no byte swap.
 
-### Sleep Data (SubID 0x0159) — Validation Status
+### Sleep Data (SubID 0x0159) — Confirmed from Radar Firmware
 
-The BLOB2 payload contains 12 bytes = 3 x uint32 in little-endian order.
+The BLOB2 payload contains IEEE 754 floats in little-endian byte order.
+This was confirmed by analysing debug strings in the radar firmware binary
+(TI Vital Signs with People Tracking demo, strings at offset 0x1a1394):
 
-| Offset | Field | Unit | Status |
-|--------|-------|------|--------|
-| 0-3 | heart_rate | bpm | **Unverified** — from Aqara cloud API docs |
-| 4-7 | respiration_rate | breaths/min | **Unverified** — from Aqara cloud API docs |
-| 8-11 | body_movement | arbitrary | **Unverified** — from Aqara cloud API docs |
+```
+heartRate = %.0f
+breathRate = %.0f
+heartDev = %.0f
+breathingDev = %.0f
+```
 
-**What is confirmed from RE:**
-- 3 x uint32 structure (memcpy of 12 bytes at `radar_sleep_data`)
-- Little-endian byte order (raw memcpy on LE ESP32)
+| Offset | Field | Type | Unit | Description |
+|--------|-------|------|------|-------------|
+| 0-3 | heartRate | float LE | bpm | Heart rate |
+| 4-7 | breathRate | float LE | breaths/min | Respiration rate |
+| 8-11 | heartDev | float LE | bpm | Heart rate deviation/variability |
+| 12-15 | breathingDev | float LE | breaths/min | Breathing deviation (not captured by stock ESP32) |
 
-**What is NOT confirmed from RE:**
-- Field order — no debug strings or named variables in the firmware binary
-- Field semantics — the names come from Aqara cloud API documentation only
+The stock ESP32 firmware copies the first 12 bytes (3 floats) via memcpy,
+dropping the 4th field (breathingDev). Our implementation does the same.
 
-**Validation approach:** When real sleep data arrives, expected ranges are:
-- Heart rate: 40–100 bpm (resting)
-- Respiration: 10–25 breaths/min
-- Body movement: 0–100 (arbitrary scale)
-
-If values appear swapped (e.g. "heart rate" reads 15, "respiration" reads 70),
-the field order needs correcting.
+**Important:** These are IEEE 754 float values, NOT uint32 integers. Reading
+the raw bytes as uint32 produces garbage (e.g. float 72.0 = 0x42900000 =
+1,116,733,440 as uint32).
 
 ### Walking Distance (SubID 0x0174) — Confirmed
 

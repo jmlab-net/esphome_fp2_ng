@@ -633,8 +633,8 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (respiration_rate_sensor_ != nullptr) {
                     respiration_rate_sensor_->publish_state(NAN);
                 }
-                if (body_movement_sensor_ != nullptr) {
-                    body_movement_sensor_->publish_state(NAN);
+                if (heart_rate_dev_sensor_ != nullptr) {
+                    heart_rate_dev_sensor_->publish_state(NAN);
                 }
             }
         }
@@ -779,10 +779,10 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (respiration_rate_sensor_ != nullptr) {
                     respiration_rate_sensor_->publish_state(resp_rate);
                 }
-                if (body_movement_sensor_ != nullptr) {
+                if (heart_rate_dev_sensor_ != nullptr) {
                     // Third field is heart rate deviation, not "body movement"
                     // Repurposed as a sleep quality indicator
-                    body_movement_sensor_->publish_state(heart_dev);
+                    heart_rate_dev_sensor_->publish_state(heart_dev);
                 }
             } else {
                 // Log raw hex for unexpected sizes

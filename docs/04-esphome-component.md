@@ -79,7 +79,7 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `sleep_presence` | binary_sensor | occupancy | Sleep zone presence (SubID 0x0167) |
 | `heart_rate` | sensor | measurement (bpm) | Heart rate from sleep monitoring (SubID 0x0159)* |
 | `respiration_rate` | sensor | measurement (br/min) | Respiration rate from sleep monitoring (SubID 0x0159)* |
-| `body_movement` | sensor | measurement | Body movement from sleep monitoring (SubID 0x0159)* |
+| `heart_rate_deviation` | sensor | measurement (bpm) | Heart rate deviation from sleep monitoring (SubID 0x0159) |
 | `walking_distance` | sensor | measurement (m) | Cumulative walking distance (SubID 0x0174, confirmed cm÷100) |
 | `target_tracking` | text_sensor | diagnostic | Base64-encoded target data (SubID 0x0117) |
 | `location_report_switch` | switch | — | Show/hide target tracking data (see below) |
@@ -101,11 +101,9 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `posture` | text_sensor | — | Per-zone posture: none/standing/sitting/lying (SubID 0x0154) |
 | `zone_map_sensor` | text_sensor | diagnostic | Zone grid as hex string |
 
-*\* Sleep data field order (heart_rate, respiration_rate, body_movement) is
-from the Aqara cloud API documentation. The 3 x uint32 LE structure is
-confirmed from stock firmware RE, but the field ORDER has not been
-independently verified. See [02-uart-protocol.md](02-uart-protocol.md) for
-details.*
+*Sleep data fields are IEEE 754 floats in LE byte order. Field names and
+order confirmed from radar firmware debug strings (TI Vital Signs demo).
+See [02-uart-protocol.md](02-uart-protocol.md) for full details.*
 
 ### Accelerometer / Light Sensor
 
@@ -157,7 +155,7 @@ clears all zone and global states to ensure consistency:
 - All zone presence, motion, people count, and posture → cleared
 - Global people count → 0
 - Sleep state → "none", sleep presence → off
-- Heart rate, respiration rate, body movement → unknown (NAN)
+- Heart rate, respiration rate, heart rate deviation → unknown (NAN)
 
 ## Auto-Calibration
 
@@ -332,8 +330,8 @@ aqara_fp2:
     name: "Heart Rate"
   respiration_rate:
     name: "Respiration Rate"
-  body_movement:
-    name: "Body Movement"
+  heart_rate_deviation:
+    name: "Heart Rate Deviation"
 
   # Target tracking
   target_tracking:

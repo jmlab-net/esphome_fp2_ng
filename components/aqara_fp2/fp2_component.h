@@ -372,8 +372,8 @@ public:
   void set_respiration_rate_sensor(sensor::Sensor *sensor) {
       respiration_rate_sensor_ = sensor;
   }
-  void set_body_movement_sensor(sensor::Sensor *sensor) {
-      body_movement_sensor_ = sensor;
+  void set_heart_rate_dev_sensor(sensor::Sensor *sensor) {
+      heart_rate_dev_sensor_ = sensor;
   }
   void set_walking_distance_sensor(sensor::Sensor *sensor) {
       walking_distance_sensor_ = sensor;
@@ -466,7 +466,7 @@ protected:
   binary_sensor::BinarySensor *sleep_presence_sensor_{nullptr};
   sensor::Sensor *heart_rate_sensor_{nullptr};
   sensor::Sensor *respiration_rate_sensor_{nullptr};
-  sensor::Sensor *body_movement_sensor_{nullptr};
+  sensor::Sensor *heart_rate_dev_sensor_{nullptr};
   sensor::Sensor *walking_distance_sensor_{nullptr};
 
   // Map Configuration (compile-time generated)
