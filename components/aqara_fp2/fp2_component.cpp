@@ -1262,29 +1262,29 @@ void FP2RadarOtaButton::press_action() {
   }
 }
 
-void FP2RadarFwDownloadButton::press_action() {
+void FP2RadarFwStageButton::press_action() {
   if (this->parent_ != nullptr) {
-    this->parent_->trigger_radar_fw_download();
+    this->parent_->trigger_radar_fw_stage();
   }
 }
 
-void FP2Component::trigger_radar_fw_download() {
+void FP2Component::trigger_radar_fw_stage() {
   if (radar_firmware_url_.empty()) {
-    ESP_LOGE(TAG, "Firmware download: no radar_firmware_url configured");
+    ESP_LOGE(TAG, "Stage firmware: no radar_firmware_url configured");
     return;
   }
 
   // Check if firmware already exists on flash
   uint32_t existing = ota_detect_firmware_size_();
   if (existing > 0) {
-    ESP_LOGI(TAG, "Firmware download: valid firmware already on flash (%u bytes). Re-downloading...", existing);
+    ESP_LOGI(TAG, "Stage firmware: valid firmware already on flash (%u bytes). Re-downloading...", existing);
   }
 
   if (ota_download_firmware_()) {
     uint32_t size = ota_detect_firmware_size_();
-    ESP_LOGW(TAG, "Firmware download complete: %u bytes written to flash. Ready for OTA.", size);
+    ESP_LOGW(TAG, "Firmware staged: %u bytes written to flash. Ready for OTA.", size);
   } else {
-    ESP_LOGE(TAG, "Firmware download failed");
+    ESP_LOGE(TAG, "Firmware staging failed");
   }
 }
 

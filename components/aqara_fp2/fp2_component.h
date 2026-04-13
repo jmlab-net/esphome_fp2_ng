@@ -236,7 +236,7 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
-class FP2RadarFwDownloadButton : public button::Button {
+class FP2RadarFwStageButton : public button::Button {
 public:
   void set_parent(FP2Component *parent) { parent_ = parent; }
 
@@ -299,10 +299,10 @@ public:
   void trigger_edge_calibration();
   void trigger_interference_calibration();
   void trigger_radar_ota();
-  void trigger_radar_fw_download();
+  void trigger_radar_fw_stage();
   void set_radar_firmware_url(const std::string &url) { radar_firmware_url_ = url; }
-  void set_radar_fw_download_button(FP2RadarFwDownloadButton *btn) {
-    radar_fw_download_button_ = btn;
+  void set_radar_fw_stage_button(FP2RadarFwStageButton *btn) {
+    radar_fw_stage_button_ = btn;
     btn->set_parent(this);
   }
 
@@ -447,7 +447,7 @@ protected:
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   FP2RadarOtaButton *radar_ota_button_{nullptr};
-  FP2RadarFwDownloadButton *radar_fw_download_button_{nullptr};
+  FP2RadarFwStageButton *radar_fw_stage_button_{nullptr};
   bool location_reporting_active_{false};
   uint32_t target_tracking_interval_ms_{500};
   uint32_t last_target_publish_millis_{0};
