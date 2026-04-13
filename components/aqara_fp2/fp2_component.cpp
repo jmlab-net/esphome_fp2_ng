@@ -528,10 +528,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       last_heartbeat_millis_ = millis();
       if (payload.size() >= 4) {
         if (payload[2] == 0x00) {
-          // Version byte maps to 3.<ver>.85 firmware string
-          char ver_buf[16];
-          snprintf(ver_buf, sizeof(ver_buf), "3.%u.85", payload[3]);
-          std::string ver_str(ver_buf);
+          // Version byte is a build number (e.g. 99 = latest known fw)
+          // Stock firmware uses a lookup table for display strings
+          auto ver_str = std::to_string(payload[3]);
           if (radar_software_sensor_ != nullptr) {
               if (radar_software_sensor_->state != ver_str) {
                   radar_software_sensor_->publish_state(ver_str);
@@ -584,7 +583,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
     case AttrId::PRESENCE_DETECT:
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
-            bool present = state != 0;
+            // Same even/odd convention as motion: even = occupied, odd = empty
+            bool present = (state % 2 == 0);
+            global_presence_active_ = present;
             if (global_presence_sensor_ != nullptr) {
                 global_presence_sensor_->publish_state(present);
             }

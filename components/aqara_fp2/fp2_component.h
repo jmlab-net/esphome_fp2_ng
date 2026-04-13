@@ -115,8 +115,8 @@ enum class AttrId : uint16_t {
     DEBUG_LOG                       = 0x0201, // Debug log output
 
     // --- Detection Reports ---
-    MOTION_DETECT                   = 0x0103, // Global motion (0=motion, else=none)
-    PRESENCE_DETECT                 = 0x0104, // Global presence (0=empty, else=occupied)
+    MOTION_DETECT                   = 0x0103, // Global motion (even=active, odd=inactive)
+    PRESENCE_DETECT                 = 0x0104, // Global presence (even=occupied, odd=empty)
     DETECT_ZONE_MOTION              = 0x0115, // Zone motion event [zone_id, state]
     ZONE_PRESENCE                   = 0x0142, // Zone presence [zone_id, state]
     WORK_MODE                       = 0x0116, // Work mode report
@@ -384,6 +384,7 @@ protected:
 
   GPIOPin *reset_pin_{nullptr};
   bool init_done_{false};
+  bool global_presence_active_{false};
   uint32_t last_heartbeat_millis_{0};
 
   // Configuration State
