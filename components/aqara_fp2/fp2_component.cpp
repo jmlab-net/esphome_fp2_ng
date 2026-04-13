@@ -629,6 +629,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::TEMPERATURE:
+      if (last_heartbeat_millis_ == 0) {
+        last_heartbeat_millis_ = millis();
+      }
       handle_temperature_report_(payload);
       break;
 
@@ -775,6 +778,10 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 }
 
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
+  if (last_heartbeat_millis_ == 0) {
+    last_heartbeat_millis_ = millis();
+  }
+
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
   if (payload.size() == 2) {
     handle_reverse_read_request_(attr_id);
