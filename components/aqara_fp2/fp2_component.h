@@ -369,6 +369,7 @@ protected:
 
   GPIOPin *reset_pin_{nullptr};
   bool init_done_{false};
+  bool radar_ready_{false};
   uint32_t last_heartbeat_millis_{0};
 
   // Configuration State

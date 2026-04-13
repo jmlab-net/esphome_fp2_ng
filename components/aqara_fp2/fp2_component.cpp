@@ -120,7 +120,7 @@ void FP2Component::check_initialization_() {
   // before starting init. The radar sends heartbeats during its boot phase
   // and does NOT ACK WRITE commands during this time. Non-heartbeat frames
   // only arrive after the radar finishes booting and is ready for config.
-  if (last_heartbeat_millis_ == 1) {  // Special value set by temp/direction handlers
+  if (radar_ready_) {
     ESP_LOGW(TAG, "*** Radar ready — starting init (uptime=%u ms) ***", millis());
     init_done_ = true;
 
@@ -566,9 +566,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   // Process specific report types
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
-      if (last_heartbeat_millis_ != 1) {  // Don't overwrite the "ready" signal
-        last_heartbeat_millis_ = millis();
-      }
+      last_heartbeat_millis_ = millis();
       if (payload.size() >= 4) {
         // Log version once, not every heartbeat
         static bool version_logged = false;
@@ -744,9 +742,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 
     case AttrId::TEMPERATURE:
       // Temperature report only comes after radar finishes booting
-      if (!init_done_) {
-        last_heartbeat_millis_ = 1;  // Signal: radar ready for init
-        ESP_LOGI(TAG, "Temperature received — radar boot complete");
+      if (!init_done_ && !radar_ready_) {
+        radar_ready_ = true;
+        ESP_LOGW(TAG, "Temperature received — radar boot complete, init will fire");
       }
       handle_temperature_report_(payload);
       break;
@@ -895,9 +893,9 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
   // Direction queries only come after radar finishes booting
-  if (!init_done_) {
-    last_heartbeat_millis_ = 1;  // Signal: radar ready for init
-    ESP_LOGI(TAG, "Response received — radar boot complete");
+  if (!init_done_ && !radar_ready_) {
+    radar_ready_ = true;
+    ESP_LOGW(TAG, "Direction query received — radar boot complete, init will fire");
   }
 
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
