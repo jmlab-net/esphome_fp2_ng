@@ -714,19 +714,31 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::SLEEP_DATA:
-        // Sleep tracking data: BLOB2, ~12 bytes
-        // Stock firmware copies into 3 x uint32 buffer
+        // Sleep tracking data: BLOB2 containing 3 fields
+        // From Aqara cloud API: heart rate (bpm), respiration rate (rpm), body movement
+        // Stock firmware copies into 3 x uint32 (12 bytes)
         if (payload.size() >= 5 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
-            ESP_LOGI(TAG, "Sleep data (%d bytes):", blob_len);
-            // Log raw hex for analysis
-            std::string hex;
-            for (int i = 5; i < (int)payload.size() && i < 5 + blob_len; i++) {
-                char buf[4];
-                snprintf(buf, sizeof(buf), "%02X ", payload[i]);
-                hex += buf;
+            if (blob_len >= 12 && payload.size() >= 17) {
+                // Parse as 3 big-endian uint32 values
+                uint32_t heart_rate = ((uint32_t)payload[5] << 24) | ((uint32_t)payload[6] << 16)
+                                    | ((uint32_t)payload[7] << 8) | payload[8];
+                uint32_t resp_rate = ((uint32_t)payload[9] << 24) | ((uint32_t)payload[10] << 16)
+                                   | ((uint32_t)payload[11] << 8) | payload[12];
+                uint32_t body_move = ((uint32_t)payload[13] << 24) | ((uint32_t)payload[14] << 16)
+                                   | ((uint32_t)payload[15] << 8) | payload[16];
+                ESP_LOGI(TAG, "Sleep data: heart=%u bpm, resp=%u rpm, movement=%u",
+                         heart_rate, resp_rate, body_move);
+                if (heart_rate_sensor_ != nullptr) {
+                    heart_rate_sensor_->publish_state((float)heart_rate);
+                }
+                if (respiration_rate_sensor_ != nullptr) {
+                    respiration_rate_sensor_->publish_state((float)resp_rate);
+                }
+            } else {
+                // Log raw hex for unexpected sizes
+                ESP_LOGW(TAG, "Sleep data unexpected size %d bytes", blob_len);
             }
-            ESP_LOGI(TAG, "  %s", hex.c_str());
         }
         break;
 

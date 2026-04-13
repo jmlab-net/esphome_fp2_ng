@@ -73,6 +73,8 @@ CONF_FALL_DETECTION = "fall_detection"
 CONF_POSTURE = "posture"
 CONF_SLEEP_STATE = "sleep_state"
 CONF_SLEEP_PRESENCE = "sleep_presence"
+CONF_HEART_RATE = "heart_rate"
+CONF_RESPIRATION_RATE = "respiration_rate"
 
 MOUNTING_POSITIONS = {
     "wall": 0x01,
@@ -252,6 +254,16 @@ CONFIG_SCHEMA = (
                 icon="mdi:bed",
                 device_class=DEVICE_CLASS_OCCUPANCY,
             ),
+            cv.Optional(CONF_HEART_RATE): sensor.sensor_schema(
+                icon="mdi:heart-pulse",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
+            cv.Optional(CONF_RESPIRATION_RATE): sensor.sensor_schema(
+                icon="mdi:lungs",
+                accuracy_decimals=0,
+                state_class=STATE_CLASS_MEASUREMENT,
+            ),
         }
     )
     .extend(uart.UART_DEVICE_SCHEMA)
@@ -264,6 +276,8 @@ SENSOR_MAP = {
     CONF_FALL_DETECTION: (binary_sensor.new_binary_sensor, "set_fall_detection_sensor"),
     CONF_SLEEP_STATE: (text_sensor_.new_text_sensor, "set_sleep_state_sensor"),
     CONF_SLEEP_PRESENCE: (binary_sensor.new_binary_sensor, "set_sleep_presence_sensor"),
+    CONF_HEART_RATE: (sensor.new_sensor, "set_heart_rate_sensor"),
+    CONF_RESPIRATION_RATE: (sensor.new_sensor, "set_respiration_rate_sensor"),
     CONF_RADAR_SOFTWARE_VERSION: (text_sensor_.new_text_sensor, "set_radar_software_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),
