@@ -254,7 +254,7 @@ Key findings:
 |-------|------|---------------|--------|
 | 0x0121 | FALL_DETECTION | UINT8 state (0=no fall, non-zero=fall) | Implemented |
 | 0x0154 | TARGET_POSTURE | UINT16 [zone_id, posture] (0=none,1=stand,2=sit,3=lie) | Implemented |
-| 0x0159 | SLEEP_DATA | BLOB2: 3× uint32 BE (heart_rate bpm, resp_rate br/min, body_movement) | Implemented |
+| 0x0159 | SLEEP_DATA | BLOB2: 3× uint32 **LE** (heart_rate, resp_rate, body_movement — field order unverified) | Implemented |
 | 0x0161 | SLEEP_STATE | UINT8 (0=awake, 1=light, 2=deep, 3=rem) | Implemented |
 | 0x0167 | SLEEP_PRESENCE | UINT8 (0=absent, non-zero=present) | Implemented |
 | 0x0171 | SLEEP_IN_OUT | UINT8 (0=out, non-zero=in) | Implemented |

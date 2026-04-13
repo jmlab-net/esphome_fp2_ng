@@ -77,9 +77,10 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `fall_detection` | binary_sensor | — | Fall event (SubID 0x0121) |
 | `sleep_state` | text_sensor | — | Sleep state: none/awake/light/deep/rem (SubID 0x0161) |
 | `sleep_presence` | binary_sensor | occupancy | Sleep zone presence (SubID 0x0167) |
-| `heart_rate` | sensor | measurement (bpm) | Heart rate from sleep monitoring (SubID 0x0159) |
-| `respiration_rate` | sensor | measurement (br/min) | Respiration rate from sleep monitoring (SubID 0x0159) |
-| `body_movement` | sensor | measurement | Body movement from sleep monitoring (SubID 0x0159) |
+| `heart_rate` | sensor | measurement (bpm) | Heart rate from sleep monitoring (SubID 0x0159)* |
+| `respiration_rate` | sensor | measurement (br/min) | Respiration rate from sleep monitoring (SubID 0x0159)* |
+| `body_movement` | sensor | measurement | Body movement from sleep monitoring (SubID 0x0159)* |
+| `walking_distance` | sensor | measurement (m) | Cumulative walking distance (SubID 0x0174, confirmed cm÷100) |
 | `target_tracking` | text_sensor | diagnostic | Base64-encoded target data (SubID 0x0117) |
 | `location_report_switch` | switch | — | Show/hide target tracking data (see below) |
 | `calibrate_edge` | button | diagnostic | Trigger edge boundary auto-calibration |
@@ -99,6 +100,12 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `zone_people_count` | sensor | measurement | Native per-zone count (SubID 0x0175) |
 | `posture` | text_sensor | — | Per-zone posture: none/standing/sitting/lying (SubID 0x0154) |
 | `zone_map_sensor` | text_sensor | diagnostic | Zone grid as hex string |
+
+*\* Sleep data field order (heart_rate, respiration_rate, body_movement) is
+from the Aqara cloud API documentation. The 3 x uint32 LE structure is
+confirmed from stock firmware RE, but the field ORDER has not been
+independently verified. See [02-uart-protocol.md](02-uart-protocol.md) for
+details.*
 
 ### Accelerometer / Light Sensor
 
