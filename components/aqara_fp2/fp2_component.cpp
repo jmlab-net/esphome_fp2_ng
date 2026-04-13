@@ -352,6 +352,10 @@ void FP2Component::send_next_command_() {
 }
 
 void FP2Component::send_ack_(AttrId attr_id) {
+  // ACKs must be sent immediately — not queued. If a WRITE command is
+  // waiting for an ACK from the radar, the queue is blocked and queued
+  // ACKs never get sent. The radar expects timely ACKs for its reports
+  // and will stop cooperating if they don't arrive.
   FP2Command cmd;
   cmd.type = OpCode::ACK;
   cmd.attr_id = attr_id;
@@ -363,23 +367,53 @@ void FP2Component::send_ack_(AttrId attr_id) {
   cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
   cmd.data.push_back(0x03);  // DataType: VOID
 
-  // ACKs are high priority - push to front of queue
-  command_queue_.push_front(cmd);
+  // Build and send frame immediately (bypass queue)
+  static uint8_t ack_seq = 0x80;  // ACKs use separate sequence space
+  std::vector<uint8_t> frame;
+  frame.push_back(0x55);
+  frame.push_back(0x00);
+  frame.push_back(0x01);
+  frame.push_back(ack_seq++);
+  frame.push_back((uint8_t)cmd.type);
+  uint16_t len = cmd.data.size();
+  frame.push_back((len >> 8) & 0xFF);
+  frame.push_back(len & 0xFF);
+  uint8_t sum = 0;
+  for (int i = 0; i < 7; i++) sum += frame[i];
+  frame.push_back((uint8_t)(~((sum - 1))));
+  frame.insert(frame.end(), cmd.data.begin(), cmd.data.end());
+  uint16_t crc = crc16(frame.data(), frame.size());
+  frame.push_back(crc & 0xFF);
+  frame.push_back((crc >> 8) & 0xFF);
+  write_array(frame);
 }
 
 void FP2Component::send_reverse_response_(AttrId attr_id, uint8_t byte_val) {
-  FP2Command cmd;
-  cmd.type = OpCode::READ;  // Reverse Read Response uses READ opcode
-  cmd.attr_id = attr_id;
-  cmd.retry_count = 0;
+  // Reverse-read responses must also be sent immediately, same as ACKs.
+  std::vector<uint8_t> payload;
+  payload.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
+  payload.push_back(((uint16_t) attr_id) & 0xFF);
+  payload.push_back(0x00);  // DataType: UINT8
+  payload.push_back(byte_val);
 
-  // Payload: [SubID 2 bytes] [DataType UINT8] [Value 1 byte]
-  cmd.data.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
-  cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
-  cmd.data.push_back(0x00);  // DataType: UINT8
-  cmd.data.push_back(byte_val);
-
-  command_queue_.push_back(cmd);
+  static uint8_t resp_seq = 0xC0;
+  std::vector<uint8_t> frame;
+  frame.push_back(0x55);
+  frame.push_back(0x00);
+  frame.push_back(0x01);
+  frame.push_back(resp_seq++);
+  frame.push_back((uint8_t)OpCode::READ);
+  uint16_t len = payload.size();
+  frame.push_back((len >> 8) & 0xFF);
+  frame.push_back(len & 0xFF);
+  uint8_t sum = 0;
+  for (int i = 0; i < 7; i++) sum += frame[i];
+  frame.push_back((uint8_t)(~((sum - 1))));
+  frame.insert(frame.end(), payload.begin(), payload.end());
+  uint16_t crc = crc16(frame.data(), frame.size());
+  frame.push_back(crc & 0xFF);
+  frame.push_back((crc >> 8) & 0xFF);
+  write_array(frame);
 }
 
 void FP2Component::handle_incoming_byte_(uint8_t byte) {
