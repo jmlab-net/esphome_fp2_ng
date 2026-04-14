@@ -447,6 +447,7 @@ protected:
 
   GPIOPin *reset_pin_{nullptr};
   bool init_done_{false};
+  bool radar_ready_{false};  // Set when radar finishes booting (non-heartbeat frame received)
   bool global_presence_active_{false};
   uint32_t last_heartbeat_millis_{0};
 

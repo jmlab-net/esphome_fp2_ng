@@ -159,10 +159,14 @@ void FP2Component::check_initialization_() {
   if (init_done_)
     return;
 
-  // We rely on handle_parsed_frame_ to set a flag or we check
-  // last_heartbeat_millis_
-  if (last_heartbeat_millis_ > 0) {
-    ESP_LOGI(TAG, "Heartbeat received. Starting initialization sequence...");
+  // Wait for radar to finish booting before sending config commands.
+  // The radar sends heartbeats during its boot phase but does NOT ACK
+  // WRITE commands during this time. Non-heartbeat frames (temperature,
+  // direction queries) only arrive after boot completes.
+  if (!radar_ready_)
+    return;
+
+  ESP_LOGW(TAG, "*** Radar ready — starting init (uptime=%u ms) ***", millis());
     init_done_ = true;
 
     // 1. Basic Settings
@@ -898,8 +902,10 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::TEMPERATURE:
-      if (last_heartbeat_millis_ == 0) {
-        last_heartbeat_millis_ = millis();
+      // Temperature reports only arrive after radar finishes booting
+      if (!radar_ready_) {
+        radar_ready_ = true;
+        ESP_LOGI(TAG, "Temperature frame received — radar boot complete");
       }
       handle_temperature_report_(payload);
       break;
@@ -1048,8 +1054,10 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 }
 
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
-  if (last_heartbeat_millis_ == 0) {
-    last_heartbeat_millis_ = millis();
+  // Direction/angle queries only arrive after radar finishes booting
+  if (!radar_ready_) {
+    radar_ready_ = true;
+    ESP_LOGI(TAG, "Response frame received — radar boot complete");
   }
 
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
@@ -1758,6 +1766,7 @@ void FP2Component::ota_loop_() {
       }
       // Reset protocol state for fresh init
       init_done_ = false;
+      radar_ready_ = false;
       last_heartbeat_millis_ = 0;
       state_ = SYNC;
       command_queue_.clear();
