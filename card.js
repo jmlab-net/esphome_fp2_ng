@@ -157,7 +157,8 @@ class AqaraFP2Card extends HTMLElement {
         }
         #fp2-canvas {
           width: 100%;
-          max-height: 50vh;
+          aspect-ratio: 1;
+          max-height: 60vh;
           display: block;
           border-radius: 8px;
           box-sizing: border-box;
