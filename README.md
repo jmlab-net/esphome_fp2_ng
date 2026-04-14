@@ -4,7 +4,12 @@ Custom ESPHome firmware for the Aqara FP2 Presence Sensor with full feature extr
 
 Forked from [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2) with extensive bug fixes, new features, and comprehensive reverse engineering documentation.
 
-![Card screenshot](images/card_screenshot.png)
+![Radar Map](images/card_radar_map.png)
+
+| | |
+|---|---|
+| ![Presence & Motion](images/card_presence_motion.png) | ![Sleep & Vitals](images/card_sleep_vitals.png) |
+| ![Controls](images/card_controls.png) | ![Diagnostics](images/card_diagnostics.png) |
 
 ## What This Does
 
