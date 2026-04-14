@@ -37,9 +37,15 @@ static uint16_t crc16(const uint8_t *data, size_t len) {
   return crc;
 }
 
+void FP2Component::publish_radar_state_(const char *state) {
+  if (radar_state_sensor_ != nullptr) {
+    radar_state_sensor_->publish_state(state);
+  }
+}
+
 void FP2Component::setup() {
-  // Force recompile marker: 20260414-v2
-  ESP_LOGE(TAG, "### SETUP v2: init_done=%d radar_ready=%d heartbeat=%u", init_done_, radar_ready_, last_heartbeat_millis_);
+  // Force recompile marker: 20260414-v3
+  ESP_LOGE(TAG, "### SETUP v3: init_done=%d radar_ready=%d heartbeat=%u", init_done_, radar_ready_, last_heartbeat_millis_);
 
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
@@ -51,6 +57,7 @@ void FP2Component::setup() {
 
   // GPIO Reset
   perform_reset_();
+  publish_radar_state_("Booting");
   ESP_LOGE(TAG, "### SETUP: perform_reset_ done");
 }
 
@@ -193,6 +200,7 @@ void FP2Component::check_initialization_() {
 
   if (init_done_ && !reinit_done && millis() > 45000) {
     ESP_LOGE(TAG, "### RE-INIT at 45s: resending all commands to fully-booted radar");
+    publish_radar_state_("Re-init");
     reinit_done = true;
     init_done_ = false;
     diag_acks = 0;
@@ -212,6 +220,7 @@ void FP2Component::check_initialization_() {
   ESP_LOGE(TAG, "### === INIT FIRING === uptime=%u reinit=%d heartbeat=%u",
            millis(), reinit_done, last_heartbeat_millis_);
     init_done_ = true;
+    publish_radar_state_(reinit_done ? "Ready" : "Init sent");
 
     // 1. Basic Settings
     enqueue_command_(OpCode::WRITE, AttrId::MONITOR_MODE, (uint8_t) 0);
@@ -696,6 +705,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
     case AttrId::PRESENCE_DETECT:
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
+            publish_radar_state_(state != 0 ? "Presence" : "Ready");
             // Stock firmware: 0 = empty, non-zero = occupied
             // (NOT the same as motion which uses even/odd)
             bool present = (state != 0);

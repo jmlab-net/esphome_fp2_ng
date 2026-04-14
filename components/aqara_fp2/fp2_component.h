@@ -378,6 +378,9 @@ public:
       mounting_position_sensor_->publish_state(pos_str);
     }
   }
+  void set_radar_state_sensor(text_sensor::TextSensor *sensor) {
+      radar_state_sensor_ = sensor;
+  }
   void set_radar_temperature_sensor(sensor::Sensor *sensor) {
       radar_temperature_sensor_ = sensor;
   }
@@ -444,6 +447,7 @@ protected:
   // Initialization
   void perform_reset_();
   void check_initialization_();
+  void publish_radar_state_(const char *state);
 
   aqara_fp2_accel::AqaraFP2Accel *fp2_accel_{nullptr};
 
@@ -492,6 +496,7 @@ protected:
   text_sensor::TextSensor *interference_grid_sensor_{nullptr};
   text_sensor::TextSensor *mounting_position_sensor_{nullptr};
 
+  text_sensor::TextSensor *radar_state_sensor_{nullptr};
   sensor::Sensor *radar_temperature_sensor_{nullptr};
   sensor::Sensor *people_count_sensor_{nullptr};
   text_sensor::TextSensor *radar_software_sensor_{nullptr};

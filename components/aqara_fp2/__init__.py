@@ -74,6 +74,7 @@ CONF_RADAR_TEMPERATURE = "radar_temperature"
 CONF_PRESENCE = "presence"
 CONF_GLOBAL_ZONE = "global_zone"
 CONF_RADAR_SOFTWARE_VERSION = "radar_software_version"
+CONF_RADAR_STATE = "radar_state"
 CONF_PEOPLE_COUNT = "people_count"
 CONF_ZONE_PEOPLE_COUNT = "zone_people_count"
 CONF_CALIBRATE_EDGE = "calibrate_edge"
@@ -269,6 +270,10 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_RADAR_SOFTWARE_VERSION): text_sensor_.text_sensor_schema(
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_RADAR_STATE): text_sensor_.text_sensor_schema(
+                icon="mdi:radar",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
             cv.Optional(CONF_RADAR_TEMPERATURE): sensor.sensor_schema(
                 unit_of_measurement=UNIT_CELSIUS,
                 icon=ICON_THERMOMETER,
@@ -333,6 +338,7 @@ SENSOR_MAP = {
     CONF_HEART_RATE_DEV: (sensor.new_sensor, "set_heart_rate_dev_sensor"),
     CONF_WALKING_DISTANCE: (sensor.new_sensor, "set_walking_distance_sensor"),
     CONF_RADAR_SOFTWARE_VERSION: (text_sensor_.new_text_sensor, "set_radar_software_sensor"),
+    CONF_RADAR_STATE: (text_sensor_.new_text_sensor, "set_radar_state_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),
     CONF_CALIBRATE_INTERFERENCE: (button.new_button, "set_calibrate_interference_button"),
