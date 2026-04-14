@@ -14,6 +14,12 @@
 namespace esphome {
 namespace aqara_fp2 {
 
+// Init diagnostic counters (persist across function calls)
+static uint32_t diag_acks = 0;
+static uint32_t diag_drops = 0;
+static uint32_t diag_init_at = 0;
+static bool diag_init_used_ready = false;
+
 // CRC16-MODBUS
 static uint16_t crc16(const uint8_t *data, size_t len) {
   uint16_t crc = 0xFFFF;
@@ -168,10 +174,12 @@ void FP2Component::loop() {
     bytes_read++;
   }
 
+
   if (debug_mode_ && bytes_read > 0) {
-    ESP_LOGD(TAG, "[DBG] loop: read %d UART bytes, init_done=%d, heartbeat=%u, queue=%d, waiting=0x%04X",
-             bytes_read, init_done_, last_heartbeat_millis_,
-             (int)command_queue_.size(), (uint16_t)waiting_for_ack_attr_id_);
+    ESP_LOGD(TAG, "[DBG] rd=%d init=%d rdy=%d hb=%u q=%d ack=%u drop=%u init@%u rdy_gate=%d",
+             bytes_read, init_done_, radar_ready_, last_heartbeat_millis_,
+             (int)command_queue_.size(), diag_acks, diag_drops, diag_init_at,
+             diag_init_used_ready);
   }
 
   check_initialization_();
@@ -193,6 +201,8 @@ void FP2Component::check_initialization_() {
     return;
   }
 
+  diag_init_at = millis();
+  diag_init_used_ready = true;
   ESP_LOGE(TAG, "### === INIT FIRING NOW === uptime=%u radar_ready=%d heartbeat=%u",
            millis(), radar_ready_, last_heartbeat_millis_);
     init_done_ = true;
@@ -354,6 +364,7 @@ void FP2Component::process_command_queue_() {
         auto &cmd = command_queue_.front();
         cmd.retry_count++;
         if (cmd.retry_count >= MAX_RETRIES) {
+          diag_drops++;
           ESP_LOGE(TAG, "### TIMEOUT DROP: 0x%04X after %d retries, queue=%d",
                    (uint16_t) cmd.attr_id, MAX_RETRIES, (int)command_queue_.size());
           command_queue_.pop_front();
@@ -589,6 +600,7 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
 
 void FP2Component::handle_ack_(AttrId attr_id) {
   if (waiting_for_ack_attr_id_ == attr_id) {
+    diag_acks++;
     ESP_LOGE(TAG, "### ACK OK: 0x%04X (queue=%d)", (uint16_t) attr_id, (int)command_queue_.size());
     waiting_for_ack_attr_id_ = AttrId::INVALID;
     if (!command_queue_.empty()) {
