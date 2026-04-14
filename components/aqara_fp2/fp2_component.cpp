@@ -311,11 +311,10 @@ void FP2Component::check_initialization_() {
       target_tracking_sensor_->set_has_state(false);
     }
 
-    // Note: zone people counting now uses native radar reports (SubID 0x0175)
-    // so location reporting is NOT auto-enabled. The user controls it via
-    // the Report Targets switch. Location-based counting in
-    // update_zone_people_counts_() is a fallback when reporting is active.
-  }
+  // Note: zone people counting now uses native radar reports (SubID 0x0175)
+  // so location reporting is NOT auto-enabled. The user controls it via
+  // the Report Targets switch. Location-based counting in
+  // update_zone_people_counts_() is a fallback when reporting is active.
 }
 
 void FP2Component::process_command_queue_() {
