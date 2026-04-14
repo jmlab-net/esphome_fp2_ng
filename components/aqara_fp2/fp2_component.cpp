@@ -168,8 +168,16 @@ void FP2Component::loop() {
 }
 
 void FP2Component::check_initialization_() {
-  if (init_done_)
+  if (init_done_) {
+    // Log once that init is already done (to confirm this branch is taken)
+    static bool init_done_logged = false;
+    if (!init_done_logged) {
+      ESP_LOGE(TAG, "### check_init: init_done=true, skipping (radar_ready=%d, heartbeat=%u)",
+               radar_ready_, last_heartbeat_millis_);
+      init_done_logged = true;
+    }
     return;
+  }
 
   // Wait for radar to fully boot before sending config commands.
   // The radar sends heartbeats for ~30-40 seconds during boot but does NOT
