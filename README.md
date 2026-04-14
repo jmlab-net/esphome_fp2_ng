@@ -46,18 +46,22 @@ See [docs/06-changelog.md](docs/06-changelog.md) for the original changelog.
 - Global people count sensor
 - Per-zone native people counting (SubID 0x0175)
 - Per-zone posture tracking (standing/sitting/lying)
-- Fall detection binary sensor
+- Fall detection via 0x0155 PEOPLE_COUNTING (Ghidra-confirmed source)
 - Sleep monitoring: state, presence, heart rate, respiration, heart rate deviation
 - Walking distance sensor
+- Radar state diagnostic sensor (Booting/Init sent/Re-init/Ready/Presence)
 - OPT3001 ambient light with factory NVS calibration
 - Accelerometer factory NVS corrections
 - Configurable target tracking publish rate (default 500ms)
 - Radar firmware OTA via XMODEM-1K (experimental)
 - Data-bearing RESPONSE frame routing (fixes missing zone reports)
+- Improved Lovelace card: throttled updates, posture-aware targets, auto-tracking
 
 **Reverse engineering:**
 - Complete UART protocol spec with 43+ SubIDs documented
 - SubID 0x0203 zone config sync mechanism (fully traced)
+- SubID 0x0155 PEOPLE_COUNTING blob structure (7 bytes: zone, count, ontime)
+- Fall detection path: radar FUN_00015624 sends 0x0155, not 0x0121
 - Radar OTA XMODEM-1K protocol (all parameters, function addresses)
 - NVS lux calibration algorithm (two-range piecewise linear)
 - Handler registration table (139 entries, 32 bytes each)
@@ -147,6 +151,8 @@ aqara_fp2:
     name: "Radar Temperature"
   radar_software_version:
     name: "Radar Version"
+  radar_state:
+    name: "Radar State"
 
   # Sleep monitoring
   sleep_state:
@@ -244,6 +250,11 @@ Add to a dashboard:
 type: custom:aqara-fp2-card
 entity_prefix: sensor.fp2_bedroom
 title: Bedroom FP2
+auto_tracking: true     # Auto-enable target tracking when card loads (default: false)
+display_mode: full      # full | zoomed (default: full)
+show_grid: true         # Show grid lines (default: true)
+show_sensor_position: true  # Show sensor marker (default: true)
+show_zone_labels: true  # Show zone labels (default: true)
 ```
 
 ## Exposed Entities
@@ -253,7 +264,8 @@ title: Bedroom FP2
 | Config Key | Type | Description |
 |------------|------|-------------|
 | `people_count` | sensor | Total detected person count |
-| `fall_detection` | binary_sensor | Fall detected (see note*) |
+| `fall_detection` | binary_sensor | Fall detected (via 0x0155 PEOPLE_COUNTING) |
+| `radar_state` | text_sensor | Radar boot state: Booting / Init sent / Re-init / Ready / Presence |
 | `sleep_state` | text_sensor | none / awake / light / deep |
 | `sleep_presence` | binary_sensor | Sleep zone occupancy |
 | `heart_rate` | sensor (bpm) | Heart rate from sleep monitoring |
@@ -323,28 +335,34 @@ grid: |-
   ..............
 ```
 
-## Critical Init Requirements
+## Radar Init Behaviour
 
-The radar requires **all three grids** to be sent during init, or it will silently refuse to produce presence/motion reports (SubID 0x0103/0x0104):
+The radar requires **all three grids** to be sent during init for presence/motion reports (SubID 0x0103/0x0104) to work:
 
 1. **Edge grid** (0x0107) — Room boundary
 2. **Entry/exit grid** (0x0109) — Entry/exit zones
 3. **Interference grid** (0x0110) — Interference sources
 
-The component sends empty defaults for any grid not configured in YAML. If you see the radar tracking targets (0x0117) but no presence detection, this is the likely cause.
+The component sends empty defaults for any grid not configured in YAML. You only need to configure `edge_grid` explicitly — the others default to empty (no interference, no entry/exit zones).
 
-Additionally, the radar ACKs commands sent during its ~38-second boot sequence but does not apply them. The component handles this with a double-init: commands are sent on first heartbeat, then re-sent at 45 seconds after boot.
+**Boot timing:** The radar ACKs commands sent during its ~38-second boot sequence but does not apply them. The component handles this with a double-init: commands are sent on first heartbeat, then re-sent at 45 seconds after boot.
+
+**Presence delay after OTA:** After an OTA flash, the radar may take 2-5 minutes before it begins producing presence/motion reports. The `radar_state` sensor tracks progress: Booting → Init sent → Re-init → Ready → Presence. Target tracking (0x0117) starts immediately, but presence reports are delayed. This is normal radar behaviour — a full power cycle may produce faster results.
 
 ## Known Limitations
 
-- **Fall detection (SubID 0x0121)** — Radar firmware analysis confirmed this
-  SubID is **not sent by the radar directly**. Fall data goes through SubID
-  0x0155 (PEOPLE_COUNTING). The stock ESP32 firmware extracted fall events
-  from 0x0155 data. The `fall_detection` sensor may not receive updates until
-  0x0155 parsing is implemented.
+- **Fall detection** — Now implemented via SubID 0x0155 (PEOPLE_COUNTING),
+  confirmed by Ghidra analysis of the radar firmware (`FUN_00015624` sends
+  0x0155 with "Fall area: %d, %d" debug string). The radar does NOT send
+  SubID 0x0121 directly. Fall is detected when the ontime value in the
+  0x0155 payload is non-zero. The old 0x0121 handler is kept as a fallback.
 
 - **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep)
   exist in the radar firmware. No REM detection.
+
+- **Presence delay after OTA** — The radar may take 2-5 minutes after an OTA
+  flash before it starts producing presence reports. Target tracking works
+  immediately. Use the `radar_state` sensor to monitor boot progress.
 
 ## Factory Calibration
 
