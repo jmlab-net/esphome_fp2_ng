@@ -9,7 +9,8 @@ Forked from [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2) with e
 | | |
 |---|---|
 | ![Presence & Motion](images/card_presence_motion.png) | ![Sleep & Vitals](images/card_sleep_vitals.png) |
-| ![Controls](images/card_controls.png) | ![Diagnostics](images/card_diagnostics.png) |
+| ![Environment](images/card_environment.png) | ![Controls](images/card_controls.png) |
+| ![Diagnostics](images/card_diagnostics.png) | |
 
 ## What This Does
 
