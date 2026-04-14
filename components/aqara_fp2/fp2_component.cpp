@@ -254,19 +254,10 @@ void FP2Component::check_initialization_() {
       enqueue_command_blob2_(
           AttrId::EDGE_MAP, std::vector<uint8_t>(edge_grid_.begin(), edge_grid_.end()));
     } else {
-      // Send full-coverage edge grid by default — without an edge grid the radar
-      // will not send global presence/motion reports (0x0103, 0x0104)
-      ESP_LOGI(TAG, "No edge_grid configured, sending full-coverage default");
-      GridMap full_grid;
-      // Set all 14 active rows (0-13) to full width: cols 2-15 active
-      // Binary: 0011 1111 1111 1100 = 0x3FFC
-      full_grid.fill(0);
-      for (int r = 0; r < 14; r++) {
-        full_grid[r * 2] = 0x3F;
-        full_grid[r * 2 + 1] = 0xFF;
-      }
-      enqueue_command_blob2_(AttrId::EDGE_MAP,
-          std::vector<uint8_t>(full_grid.begin(), full_grid.end()));
+      // No edge_grid configured — DON'T send a default.
+      // Let the radar use its existing/factory edge grid.
+      // The upstream code also does not send an edge grid when unconfigured.
+      ESP_LOGI(TAG, "No edge_grid configured, using radar's existing boundary");
     }
 
     // 3. Zones
