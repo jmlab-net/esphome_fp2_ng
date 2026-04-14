@@ -1,8 +1,14 @@
 # esphome_fp2_ng
 
-Custom ESPHome firmware for the Aqara FP2 Presence Sensor with full feature extraction: per-zone people counting, sleep monitoring, fall detection, posture tracking, and factory-calibrated light sensing.
+> **TL;DR:** Full-featured ESPHome firmware for the Aqara FP2 presence sensor — unlocks per-zone people counting, sleep monitoring, fall detection, posture tracking, and real-time target visualisation. All local, no cloud.
 
-Forked from [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2) with extensive bug fixes, new features, and comprehensive reverse engineering documentation.
+The Aqara FP2 is a remarkable piece of hardware — an ESP32 paired with a TI IWR6843AOP 60GHz mmWave radar capable of tracking individual people through walls, monitoring heart rate and respiration during sleep, and detecting falls. Unfortunately, Aqara locks most of this behind HomeKit and their cloud.
+
+This project replaces the stock ESP32 firmware with ESPHome, giving you local-only access to everything the radar can do: per-zone presence and motion detection, native people counting, sleep state monitoring with heart rate and respiration, fall detection with configurable overtime alerts, posture tracking (standing/sitting/lying), walking distance, and real-time target position streaming.
+
+Every feature has been validated against both the stock ESP32 firmware and the TI radar firmware through comprehensive Ghidra reverse engineering. The complete UART protocol (50+ SubIDs) is documented, and a custom Lovelace card provides live radar visualisation with zone overlays and posture-aware target tracking.
+
+Forked from [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
 ![Radar Map](images/card_radar_map.png)
 
