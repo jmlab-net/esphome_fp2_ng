@@ -8,6 +8,7 @@
  * - show_grid: (optional) Show grid lines - Default: true
  * - show_sensor_position: (optional) Show sensor position marker - Default: true
  * - show_zone_labels: (optional) Show zone labels - Default: true
+ * - auto_tracking: (optional) Automatically enable target tracking when card loads - Default: false
  */
 class AqaraFP2Card extends HTMLElement {
   constructor() {
@@ -59,6 +60,7 @@ class AqaraFP2Card extends HTMLElement {
     this.showGrid = config.show_grid !== false;
     this.showSensorPosition = config.show_sensor_position !== false;
     this.showZoneLabels = config.show_zone_labels !== false;
+    this.autoTracking = config.auto_tracking === true;
   }
 
   getReportTargetsSwitchEntity() {
@@ -199,6 +201,30 @@ class AqaraFP2Card extends HTMLElement {
     this.resizeObserver.observe(this.content);
 
     this.fetchMapConfig();
+
+    // Auto-enable tracking when card loads
+    if (this.autoTracking) {
+      this._enableTracking();
+    }
+  }
+
+  _enableTracking() {
+    const switchEntity = this.getReportTargetsSwitchEntity();
+    const switchState = this._hass && this._hass.states[switchEntity];
+    if (switchState && switchState.state === 'off') {
+      this._hass.callService('switch', 'turn_on', { entity_id: switchEntity });
+      this._autoTrackingEnabled = true;
+    }
+  }
+
+  _disableTracking() {
+    if (!this._autoTrackingEnabled) return;
+    const switchEntity = this.getReportTargetsSwitchEntity();
+    const switchState = this._hass && this._hass.states[switchEntity];
+    if (switchState && switchState.state === 'on') {
+      this._hass.callService('switch', 'turn_off', { entity_id: switchEntity });
+    }
+    this._autoTrackingEnabled = false;
   }
 
   updateLiveViewButton() {
@@ -635,6 +661,7 @@ class AqaraFP2Card extends HTMLElement {
   disconnectedCallback() {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this._pendingUpdate) clearTimeout(this._pendingUpdate);
+    if (this.autoTracking) this._disableTracking();
   }
 
   getCardSize() { return 8; }
