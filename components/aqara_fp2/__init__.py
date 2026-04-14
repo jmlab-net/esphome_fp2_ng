@@ -41,6 +41,7 @@ FP2CalibrateEdgeButton = aqara_fp2_ns.class_("FP2CalibrateEdgeButton", button.Bu
 FP2CalibrateInterferenceButton = aqara_fp2_ns.class_("FP2CalibrateInterferenceButton", button.Button)
 FP2ClearEdgeButton = aqara_fp2_ns.class_("FP2ClearEdgeButton", button.Button)
 FP2ClearInterferenceButton = aqara_fp2_ns.class_("FP2ClearInterferenceButton", button.Button)
+FP2DeleteFalseTargetsButton = aqara_fp2_ns.class_("FP2DeleteFalseTargetsButton", button.Button)
 FP2RadarOtaButton = aqara_fp2_ns.class_("FP2RadarOtaButton", button.Button)
 FP2RadarFwStageButton = aqara_fp2_ns.class_("FP2RadarFwStageButton", button.Button)
 FP2Zone = aqara_fp2_ns.class_("FP2Zone", cg.Component)
@@ -84,6 +85,11 @@ CONF_CLEAR_INTERFERENCE = "clear_interference"
 CONF_RADAR_OTA = "radar_ota"
 CONF_RADAR_FW_STAGE = "radar_fw_stage"
 CONF_FALL_DETECTION = "fall_detection"
+CONF_FALL_OVERTIME = "fall_overtime"
+CONF_FALL_OVERTIME_PERIOD = "fall_overtime_period"
+CONF_DELETE_FALSE_TARGETS = "delete_false_targets"
+CONF_SLEEP_MOUNT_POSITION = "sleep_mount_position"
+CONF_SLEEP_ZONE_SIZE = "sleep_zone_size"
 CONF_POSTURE = "posture"
 CONF_SLEEP_STATE = "sleep_state"
 CONF_SLEEP_PRESENCE = "sleep_presence"
@@ -248,6 +254,18 @@ CONFIG_SCHEMA = (
                 icon="mdi:signal-off",
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_DELETE_FALSE_TARGETS): button.button_schema(
+                FP2DeleteFalseTargetsButton,
+                icon="mdi:target-account",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_FALL_OVERTIME): binary_sensor.binary_sensor_schema(
+                icon="mdi:alert-octagon",
+            ),
+            cv.Optional(CONF_FALL_OVERTIME_PERIOD): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_DWELL_TIME_ENABLE): cv.boolean,
+            cv.Optional(CONF_SLEEP_MOUNT_POSITION): cv.int_range(min=0, max=3),
+            cv.Optional(CONF_SLEEP_ZONE_SIZE): cv.uint32_t,
             cv.Optional(CONF_RADAR_OTA): button.button_schema(
                 FP2RadarOtaButton,
                 icon="mdi:chip",
@@ -344,6 +362,8 @@ SENSOR_MAP = {
     CONF_CALIBRATE_INTERFERENCE: (button.new_button, "set_calibrate_interference_button"),
     CONF_CLEAR_EDGE: (button.new_button, "set_clear_edge_button"),
     CONF_CLEAR_INTERFERENCE: (button.new_button, "set_clear_interference_button"),
+    CONF_DELETE_FALSE_TARGETS: (button.new_button, "set_delete_false_targets_button"),
+    CONF_FALL_OVERTIME: (binary_sensor.new_binary_sensor, "set_fall_overtime_sensor"),
     CONF_RADAR_OTA: (button.new_button, "set_radar_ota_button"),
     CONF_RADAR_FW_STAGE: (button.new_button, "set_radar_fw_stage_button"),
     CONF_TARGET_TRACKING: (text_sensor_.new_text_sensor, "set_target_tracking_sensor"),
@@ -402,6 +422,15 @@ async def to_code(config):
 
     cg.add(var.set_mounting_position(config[CONF_MOUNTING_POSITION]))
     cg.add(var.set_left_right_reverse(config[CONF_LEFT_RIGHT_REVERSE]))
+
+    if CONF_FALL_OVERTIME_PERIOD in config:
+        cg.add(var.set_fall_overtime_period(config[CONF_FALL_OVERTIME_PERIOD]))
+    if CONF_DWELL_TIME_ENABLE in config:
+        cg.add(var.set_dwell_time_enable(config[CONF_DWELL_TIME_ENABLE]))
+    if CONF_SLEEP_MOUNT_POSITION in config:
+        cg.add(var.set_sleep_mount_position(config[CONF_SLEEP_MOUNT_POSITION]))
+    if CONF_SLEEP_ZONE_SIZE in config:
+        cg.add(var.set_sleep_zone_size(config[CONF_SLEEP_ZONE_SIZE]))
 
     if CONF_GLOBAL_ZONE in config:
         global_zone_conf = config[CONF_GLOBAL_ZONE]

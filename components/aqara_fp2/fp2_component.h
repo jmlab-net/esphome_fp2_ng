@@ -246,6 +246,15 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
+class FP2DeleteFalseTargetsButton : public button::Button {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void press_action() override;
+  FP2Component *parent_{nullptr};
+};
+
 class FP2RadarOtaButton : public button::Button {
 public:
   void set_parent(FP2Component *parent) { parent_ = parent; }
@@ -278,6 +287,21 @@ public:
 
   void set_fall_detection_sensitivity(uint8_t val) {
     fall_detection_sensitivity_ = val;
+  }
+  void set_fall_overtime_period(uint32_t val) {
+    fall_overtime_period_ = val;
+  }
+  void set_fall_overtime_sensor(binary_sensor::BinarySensor *sensor) {
+    fall_overtime_sensor_ = sensor;
+  }
+  void set_dwell_time_enable(bool val) {
+    dwell_time_enable_ = val;
+  }
+  void set_sleep_mount_position(uint8_t val) {
+    sleep_mount_position_ = val;
+  }
+  void set_sleep_zone_size(uint32_t val) {
+    sleep_zone_size_ = val;
   }
 
   void set_interference_grid(const std::vector<uint8_t> &grid);
@@ -319,6 +343,10 @@ public:
     clear_interference_button_ = btn;
     btn->set_parent(this);
   }
+  void set_delete_false_targets_button(FP2DeleteFalseTargetsButton *btn) {
+    delete_false_targets_button_ = btn;
+    btn->set_parent(this);
+  }
   void set_radar_ota_button(FP2RadarOtaButton *btn) {
     radar_ota_button_ = btn;
     btn->set_parent(this);
@@ -327,6 +355,7 @@ public:
   void trigger_edge_calibration();
   void trigger_interference_calibration();
   void clear_edge_calibration();
+  void trigger_delete_false_targets();
   void clear_interference_calibration();
   void trigger_radar_ota();
   void trigger_radar_fw_stage();
@@ -462,6 +491,10 @@ protected:
   uint8_t mounting_position_{0x01}; // Default Wall
   bool left_right_reverse_{false};
   uint8_t fall_detection_sensitivity_{1};
+  uint32_t fall_overtime_period_{0};    // 0 = not configured (ms)
+  bool dwell_time_enable_{false};
+  uint8_t sleep_mount_position_{0};     // 0 = not configured
+  uint32_t sleep_zone_size_{0};         // 0 = not configured
 
   // Grids (Optional)
   GridMap interference_grid_{};
@@ -484,6 +517,7 @@ protected:
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   FP2ClearEdgeButton *clear_edge_button_{nullptr};
   FP2ClearInterferenceButton *clear_interference_button_{nullptr};
+  FP2DeleteFalseTargetsButton *delete_false_targets_button_{nullptr};
   FP2RadarOtaButton *radar_ota_button_{nullptr};
   FP2RadarFwStageButton *radar_fw_stage_button_{nullptr};
   bool location_reporting_active_{false};
@@ -501,6 +535,7 @@ protected:
   sensor::Sensor *people_count_sensor_{nullptr};
   text_sensor::TextSensor *radar_software_sensor_{nullptr};
   binary_sensor::BinarySensor *fall_detection_sensor_{nullptr};
+  binary_sensor::BinarySensor *fall_overtime_sensor_{nullptr};
   text_sensor::TextSensor *sleep_state_sensor_{nullptr};
   binary_sensor::BinarySensor *sleep_presence_sensor_{nullptr};
   sensor::Sensor *heart_rate_sensor_{nullptr};

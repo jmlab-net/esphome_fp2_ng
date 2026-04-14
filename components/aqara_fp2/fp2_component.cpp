@@ -134,6 +134,17 @@ void FP2ClearInterferenceButton::press_action() {
   }
 }
 
+void FP2DeleteFalseTargetsButton::press_action() {
+  if (this->parent_ != nullptr) {
+    this->parent_->trigger_delete_false_targets();
+  }
+}
+
+void FP2Component::trigger_delete_false_targets() {
+  ESP_LOGI(TAG, "Sending delete false targets command...");
+  enqueue_command_(OpCode::WRITE, AttrId::DELETE_FALSE_TARGETS, (uint8_t) 1);
+}
+
 void FP2Component::clear_edge_calibration() {
   // Reset to full-coverage default grid (not empty — empty disables presence detection)
   ESP_LOGI(TAG, "Resetting room boundary to full-coverage default...");
@@ -240,11 +251,20 @@ void FP2Component::check_initialization_() {
     // target data is published to the text sensor, not whether the radar tracks.
     enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
-    enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t) 0); // dwell time enable
+    enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t)(dwell_time_enable_ ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE,
                      (uint8_t)(walking_distance_sensor_ != nullptr ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_EN, true);
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_DATA, (uint8_t) 1);
+    if (fall_overtime_period_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::FALL_OVERTIME_PERIOD, fall_overtime_period_);
+    }
+    if (sleep_mount_position_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, sleep_mount_position_);
+    }
+    if (sleep_zone_size_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_ZONE_SIZE, sleep_zone_size_);
+    }
 
     // 2. Grids — all three must be sent every init for the radar to produce
     //    presence/motion reports.  Send configured grids or empty defaults.
@@ -880,6 +900,19 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                         }
                     }
                 }
+            }
+        }
+        break;
+
+    case AttrId::FALL_OVERTIME_DETECTION:
+        // 0x0135 — Reports when a fall has persisted beyond the configured overtime period.
+        // This indicates an emergency (person unable to get up).
+        if (payload.size() >= 7 && payload[2] == 0x02) {
+            uint32_t value = ((uint32_t)payload[3] << 24) | ((uint32_t)payload[4] << 16) |
+                             ((uint32_t)payload[5] << 8) | ((uint32_t)payload[6]);
+            ESP_LOGW(TAG, "Fall overtime detection: value=%u", value);
+            if (fall_overtime_sensor_ != nullptr) {
+                fall_overtime_sensor_->publish_state(value != 0);
             }
         }
         break;
