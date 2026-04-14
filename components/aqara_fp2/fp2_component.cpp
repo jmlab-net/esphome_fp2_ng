@@ -251,17 +251,28 @@ void FP2Component::check_initialization_() {
     {
       std::vector<uint8_t> empty_grid(40, 0x00);
 
+      auto interference_data = has_interference_grid_
+          ? std::vector<uint8_t>(interference_grid_.begin(), interference_grid_.end())
+          : empty_grid;
+      auto exit_data = has_exit_grid_
+          ? std::vector<uint8_t>(exit_grid_.begin(), exit_grid_.end())
+          : empty_grid;
+
+      // Log first 8 bytes of each grid for debugging
+      ESP_LOGE(TAG, "### GRID interference (has=%d, size=%d): %02x%02x%02x%02x %02x%02x%02x%02x",
+               has_interference_grid_, interference_data.size(),
+               interference_data[0], interference_data[1], interference_data[2], interference_data[3],
+               interference_data[4], interference_data[5], interference_data[6], interference_data[7]);
+      ESP_LOGE(TAG, "### GRID exit (has=%d, size=%d): %02x%02x%02x%02x %02x%02x%02x%02x",
+               has_exit_grid_, exit_data.size(),
+               exit_data[0], exit_data[1], exit_data[2], exit_data[3],
+               exit_data[4], exit_data[5], exit_data[6], exit_data[7]);
+
       // 0x0110 Interference Source
-      enqueue_command_blob2_(AttrId::INTERFERENCE_MAP,
-          has_interference_grid_
-              ? std::vector<uint8_t>(interference_grid_.begin(), interference_grid_.end())
-              : empty_grid);
+      enqueue_command_blob2_(AttrId::INTERFERENCE_MAP, interference_data);
 
       // 0x0109 Enter/Exit Label
-      enqueue_command_blob2_(AttrId::ENTRY_EXIT_MAP,
-          has_exit_grid_
-              ? std::vector<uint8_t>(exit_grid_.begin(), exit_grid_.end())
-              : empty_grid);
+      enqueue_command_blob2_(AttrId::ENTRY_EXIT_MAP, exit_data);
 
       // 0x0107 Edge Label — full-coverage default when not configured
       if (has_edge_grid_) {
