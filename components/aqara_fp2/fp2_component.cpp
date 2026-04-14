@@ -950,11 +950,18 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::TEMPERATURE:
-      // Temperature reports only arrive after radar finishes booting
+      // Temperature reports only arrive after radar finishes booting (~38s).
+      // If init already fired during boot (commands ACKed but not applied),
+      // re-run init now that the radar is truly ready.
       if (!radar_ready_) {
-        ESP_LOGE(TAG, "### TEMPERATURE: setting radar_ready=true (was %d, init_done=%d, uptime=%u)",
-                 radar_ready_, init_done_, millis());
+        ESP_LOGE(TAG, "### TEMPERATURE: radar boot complete at uptime=%u, init_done=%d — re-running init",
+                 millis(), init_done_);
         radar_ready_ = true;
+        if (init_done_) {
+          // Re-run init — the first init during boot was ACKed but not applied
+          ESP_LOGE(TAG, "### RE-INIT: sending all config commands again");
+          init_done_ = false;  // Allow check_initialization_ to fire again
+        }
       }
       handle_temperature_report_(payload);
       break;
