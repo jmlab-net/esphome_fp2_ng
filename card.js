@@ -102,6 +102,7 @@ class AqaraFP2Card extends HTMLElement {
       <style>
         ha-card {
           padding: 16px;
+          overflow: hidden;
         }
         .card-header {
           display: flex;
@@ -758,15 +759,15 @@ class AqaraFP2Card extends HTMLElement {
   }
 
   getCardSize() {
-    return 4;
+    return 8;
   }
 
   getGridOptions() {
     return {
-      rows: 4,
+      rows: "auto",
       columns: 6,
-      min_rows: 3,
-      max_rows: 6,
+      min_rows: 4,
+      max_rows: 12,
     };
   }
 }
