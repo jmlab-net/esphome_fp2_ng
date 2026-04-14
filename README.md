@@ -39,6 +39,8 @@ See [docs/06-changelog.md](docs/06-changelog.md) for the original changelog.
 - Zone presence inference from motion/people count (0x0142 may not fire on boot)
 - Stale sensor states cleared on presence-off cascade (sleep, people count, posture)
 - Location reporting always enabled at radar level (people counting dependency)
+- **All three grids (edge, interference, exit) always sent during init** — radar silently suppresses presence/motion reports if any grid is missing
+- Double-init at 45 seconds — radar ACKs commands during boot but doesn't apply them
 
 **New features:**
 - Global people count sensor
@@ -320,6 +322,18 @@ grid: |-
   ..............
   ..............
 ```
+
+## Critical Init Requirements
+
+The radar requires **all three grids** to be sent during init, or it will silently refuse to produce presence/motion reports (SubID 0x0103/0x0104):
+
+1. **Edge grid** (0x0107) — Room boundary
+2. **Entry/exit grid** (0x0109) — Entry/exit zones
+3. **Interference grid** (0x0110) — Interference sources
+
+The component sends empty defaults for any grid not configured in YAML. If you see the radar tracking targets (0x0117) but no presence detection, this is the likely cause.
+
+Additionally, the radar ACKs commands sent during its ~38-second boot sequence but does not apply them. The component handles this with a double-init: commands are sent on first heartbeat, then re-sent at 45 seconds after boot.
 
 ## Known Limitations
 
