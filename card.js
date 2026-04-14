@@ -114,15 +114,24 @@ class AqaraFP2Card extends HTMLElement {
         <div class="fp2-info"></div>
       </ha-card>
       <style>
+        :host {
+          display: block;
+          height: 100%;
+        }
         ha-card {
           padding: 16px;
           overflow: hidden;
+          height: 100%;
+          box-sizing: border-box;
+          display: flex;
+          flex-direction: column;
         }
         .fp2-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
           margin-bottom: 12px;
+          flex-shrink: 0;
         }
         .fp2-title {
           font-size: 18px;
@@ -152,21 +161,26 @@ class AqaraFP2Card extends HTMLElement {
           box-shadow: 0 0 8px rgba(var(--rgb-primary-color), 0.4);
         }
         .fp2-content {
+          flex: 1;
+          min-height: 0;
           display: flex;
           flex-direction: column;
         }
         #fp2-canvas {
           width: 100%;
+          flex: 1;
+          min-height: 0;
           display: block;
           border-radius: 8px;
           box-sizing: border-box;
-          aspect-ratio: 1;
+          object-fit: contain;
         }
         .fp2-info {
           display: flex;
           flex-wrap: wrap;
-          gap: 12px;
-          margin-top: 12px;
+          gap: 8px;
+          margin-top: 8px;
+          flex-shrink: 0;
           font-size: 13px;
           color: var(--secondary-text-color);
         }
