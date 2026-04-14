@@ -705,8 +705,10 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       if (payload.size() >= 4) {
         if (payload[2] == 0x00) {
           // Version byte is a build number (e.g. 99 = latest known fw)
-          // Stock firmware uses a lookup table for display strings
           auto ver_str = std::to_string(payload[3]);
+          if (radar_hw_version_ > 0) {
+            ver_str += " (HW:" + std::to_string(radar_hw_version_) + ")";
+          }
           if (radar_software_sensor_ != nullptr) {
               if (radar_software_sensor_->state != ver_str) {
                   radar_software_sensor_->publish_state(ver_str);
@@ -717,18 +719,11 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       break;
 
     case AttrId::HW_VERSION:
-        // 0x0101 — Hardware version byte from radar. Append to radar version string.
+        // 0x0101 — Hardware version byte from radar. Store it; will be
+        // appended to the SW version string on the next heartbeat.
         if (payload.size() >= 4 && payload[2] == 0x00) {
-            uint8_t hw_ver = payload[3];
-            ESP_LOGI(TAG, "Radar hardware version: %u", hw_ver);
-            if (radar_software_sensor_ != nullptr) {
-                // Append HW version to existing SW version: "99 (HW:3)"
-                std::string current = radar_software_sensor_->get_state();
-                if (current.find("HW:") == std::string::npos) {
-                    std::string combined = current + " (HW:" + std::to_string(hw_ver) + ")";
-                    radar_software_sensor_->publish_state(combined);
-                }
-            }
+            radar_hw_version_ = payload[3];
+            ESP_LOGI(TAG, "Radar hardware version: %u", radar_hw_version_);
         }
         break;
 

@@ -514,6 +514,7 @@ protected:
   uint32_t sleep_zone_size_{0};         // 0 = not configured
   uint16_t sleep_bed_height_{0};        // 0 = not configured
   uint16_t overhead_height_{0};         // 0 = not configured
+  uint8_t radar_hw_version_{0};         // Captured from 0x0101 during boot
   GridMap falldown_blind_zone_{};
   bool has_falldown_blind_zone_{false};
 
