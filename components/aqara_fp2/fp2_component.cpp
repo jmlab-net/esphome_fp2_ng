@@ -49,14 +49,23 @@ void FP2Component::setup() {
 
 void FP2Component::perform_reset_() {
   if (reset_pin_ != nullptr) {
-    ESP_LOGI(TAG, "Performing Hardware Reset via Pin...");
+    ESP_LOGE(TAG, "### Performing radar reset via GPIO13...");
     reset_pin_->setup();
     reset_pin_->digital_write(false);
-    delay(100);
+    delay(500);  // Hold reset LOW for 500ms (was 100ms — too short for reliable reset)
     reset_pin_->digital_write(true);
-    ESP_LOGI(TAG, "Hardware Reset Done. Waiting for heartbeat...");
+    delay(1000);  // Wait 1s for radar to start boot sequence
+
+    // Flush any stale UART data from before the reset
+    int flushed = 0;
+    while (available()) {
+      uint8_t byte;
+      read_byte(&byte);
+      flushed++;
+    }
+    ESP_LOGE(TAG, "### Radar reset done, flushed %d stale UART bytes", flushed);
   } else {
-    ESP_LOGI(TAG, "No Reset Pin configured. Waiting for heartbeat...");
+    ESP_LOGE(TAG, "### No Reset Pin configured!");
   }
 
   if (this->location_report_switch_ != nullptr) {
@@ -169,16 +178,6 @@ void FP2Component::loop() {
 }
 
 void FP2Component::check_initialization_() {
-  static uint32_t call_count = 0;
-  call_count++;
-
-  // Log EVERY call for first 5 seconds, then every 5 seconds
-  if (call_count <= 10 || (millis() % 5000 < 50)) {
-    ESP_LOGE(TAG, "### check_init[%u]: init_done=%d radar_ready=%d heartbeat=%u queue=%d uptime=%u",
-             call_count, init_done_, radar_ready_, last_heartbeat_millis_,
-             (int)command_queue_.size(), millis());
-  }
-
   if (init_done_)
     return;
 
