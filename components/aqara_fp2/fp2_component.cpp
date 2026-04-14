@@ -107,12 +107,18 @@ void FP2ClearInterferenceButton::press_action() {
 }
 
 void FP2Component::clear_edge_calibration() {
-  ESP_LOGI(TAG, "Clearing edge/room boundary calibration (sending empty grid)...");
-  std::vector<uint8_t> empty_grid(40, 0x00);
-  enqueue_command_blob2_(AttrId::EDGE_MAP, empty_grid);
+  // Reset to full-coverage default grid (not empty — empty disables presence detection)
+  ESP_LOGI(TAG, "Resetting room boundary to full-coverage default...");
+  GridMap default_grid;
+  default_grid.fill(0);
+  for (int r = 0; r < 14; r++) {
+    default_grid[r * 2] = 0x3F;      // cols 2-7: bits 13-8
+    default_grid[r * 2 + 1] = 0xFC;  // cols 8-15: bits 7-2
+  }
+  enqueue_command_blob2_(AttrId::EDGE_MAP,
+      std::vector<uint8_t>(default_grid.begin(), default_grid.end()));
   if (edge_label_grid_sensor_ != nullptr) {
-    GridMap empty{};
-    edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(empty));
+    edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(default_grid));
   }
 }
 
