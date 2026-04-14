@@ -44,26 +44,20 @@ void FP2Component::publish_radar_state_(const char *state) {
 }
 
 void FP2Component::setup() {
-  // Force recompile marker: 20260414-v3
-  ESP_LOGE(TAG, "### SETUP v3: init_done=%d radar_ready=%d heartbeat=%u", init_done_, radar_ready_, last_heartbeat_millis_);
-
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
   init_done_ = false;
   radar_ready_ = false;
   last_heartbeat_millis_ = 0;
 
-  ESP_LOGE(TAG, "### SETUP: state reset done, init_done=%d radar_ready=%d", init_done_, radar_ready_);
-
   // GPIO Reset
   perform_reset_();
   publish_radar_state_("Booting");
-  ESP_LOGE(TAG, "### SETUP: perform_reset_ done");
 }
 
 void FP2Component::perform_reset_() {
   if (reset_pin_ != nullptr) {
-    ESP_LOGE(TAG, "### Performing radar reset via GPIO13...");
+    ESP_LOGD(TAG, "Performing radar reset via GPIO13...");
     reset_pin_->setup();
     reset_pin_->digital_write(false);
     delay(500);  // Hold reset LOW for 500ms (was 100ms — too short for reliable reset)
@@ -77,9 +71,9 @@ void FP2Component::perform_reset_() {
       read_byte(&byte);
       flushed++;
     }
-    ESP_LOGE(TAG, "### Radar reset done, flushed %d stale UART bytes", flushed);
+    ESP_LOGD(TAG, "Radar reset done, flushed %d stale UART bytes", flushed);
   } else {
-    ESP_LOGE(TAG, "### No Reset Pin configured!");
+    ESP_LOGW(TAG, "No Reset Pin configured!");
   }
 
   if (this->location_report_switch_ != nullptr) {
@@ -210,7 +204,7 @@ void FP2Component::check_initialization_() {
   static bool reinit_done = false;
 
   if (init_done_ && !reinit_done && millis() > 45000) {
-    ESP_LOGE(TAG, "### RE-INIT at 45s: resending all commands to fully-booted radar");
+    ESP_LOGI(TAG, "Re-init at 45s: resending all commands to fully-booted radar");
     publish_radar_state_("Re-init");
     reinit_done = true;
     init_done_ = false;
@@ -228,7 +222,7 @@ void FP2Component::check_initialization_() {
 
   diag_init_at = millis();
   diag_init_used_ready = reinit_done;
-  ESP_LOGE(TAG, "### === INIT FIRING === uptime=%u reinit=%d heartbeat=%u",
+  ESP_LOGI(TAG, "Init firing: uptime=%u reinit=%d heartbeat=%u",
            millis(), reinit_done, last_heartbeat_millis_);
     init_done_ = true;
     publish_radar_state_(reinit_done ? "Ready" : "Init sent");
@@ -305,14 +299,16 @@ void FP2Component::check_initialization_() {
           : empty_grid;
 
       // Log first 8 bytes of each grid for debugging
-      ESP_LOGE(TAG, "### GRID interference (has=%d, size=%d): %02x%02x%02x%02x %02x%02x%02x%02x",
-               has_interference_grid_, interference_data.size(),
-               interference_data[0], interference_data[1], interference_data[2], interference_data[3],
-               interference_data[4], interference_data[5], interference_data[6], interference_data[7]);
-      ESP_LOGE(TAG, "### GRID exit (has=%d, size=%d): %02x%02x%02x%02x %02x%02x%02x%02x",
-               has_exit_grid_, exit_data.size(),
-               exit_data[0], exit_data[1], exit_data[2], exit_data[3],
-               exit_data[4], exit_data[5], exit_data[6], exit_data[7]);
+      if (debug_mode_) {
+        ESP_LOGD(TAG, "GRID interference (has=%d): %02x%02x%02x%02x %02x%02x%02x%02x",
+                 has_interference_grid_,
+                 interference_data[0], interference_data[1], interference_data[2], interference_data[3],
+                 interference_data[4], interference_data[5], interference_data[6], interference_data[7]);
+        ESP_LOGD(TAG, "GRID exit (has=%d): %02x%02x%02x%02x %02x%02x%02x%02x",
+                 has_exit_grid_,
+                 exit_data[0], exit_data[1], exit_data[2], exit_data[3],
+                 exit_data[4], exit_data[5], exit_data[6], exit_data[7]);
+      }
 
       // 0x0110 Interference Source
       enqueue_command_blob2_(AttrId::INTERFERENCE_MAP, interference_data);
@@ -425,7 +421,7 @@ void FP2Component::check_initialization_() {
       target_tracking_sensor_->set_has_state(false);
     }
 
-  ESP_LOGE(TAG, "=== INIT COMPLETE: %d commands queued (uptime=%u ms) ===",
+  ESP_LOGI(TAG, "Init complete: %d commands queued (uptime=%u ms)",
            (int)command_queue_.size(), millis());
 }
 
@@ -473,9 +469,11 @@ void FP2Component::send_next_command_() {
   auto &cmd = command_queue_.front();
   static uint8_t next_tx_seq = 0;
 
-  ESP_LOGE(TAG, "### TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
-           (int)cmd.type, (uint16_t)cmd.attr_id, cmd.data.size(),
-           cmd.retry_count, (int)command_queue_.size());
+  if (debug_mode_) {
+    ESP_LOGD(TAG, "TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
+             (int)cmd.type, (uint16_t)cmd.attr_id, cmd.data.size(),
+             cmd.retry_count, (int)command_queue_.size());
+  }
 
   // Build frame: [Sync][Ver][Ver][Seq][Op][Len][Len][Check][Payload][CRC][CRC]
   std::vector<uint8_t> frame;
@@ -677,7 +675,9 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
 void FP2Component::handle_ack_(AttrId attr_id) {
   if (waiting_for_ack_attr_id_ == attr_id) {
     diag_acks++;
-    ESP_LOGE(TAG, "### ACK OK: 0x%04X (queue=%d)", (uint16_t) attr_id, (int)command_queue_.size());
+    if (debug_mode_) {
+      ESP_LOGD(TAG, "ACK OK: 0x%04X (queue=%d)", (uint16_t) attr_id, (int)command_queue_.size());
+    }
     waiting_for_ack_attr_id_ = AttrId::INVALID;
     if (!command_queue_.empty()) {
       command_queue_.pop_front();
@@ -698,7 +698,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
       if (last_heartbeat_millis_ == 0) {
-        ESP_LOGE(TAG, "### FIRST HEARTBEAT at uptime=%u ms, init_done=%d radar_ready=%d",
+        ESP_LOGI(TAG, "First heartbeat at uptime=%u ms",
                  millis(), init_done_, radar_ready_);
       }
       last_heartbeat_millis_ = millis();
@@ -1123,10 +1123,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       if (!first_temp_seen) {
         first_temp_seen = true;
         radar_ready_ = true;
-        ESP_LOGE(TAG, "### FIRST TEMPERATURE at uptime=%u — radar boot complete, init_done=%d",
-                 millis(), init_done_);
+        ESP_LOGI(TAG, "First temperature at uptime=%u — radar boot complete", millis());
         if (init_done_) {
-          ESP_LOGE(TAG, "### RE-INIT: resending all config commands to fully-booted radar");
+          ESP_LOGI(TAG, "Re-init: resending config commands to fully-booted radar");
           init_done_ = false;
           diag_acks = 0;
           diag_drops = 0;
@@ -1274,7 +1273,7 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
         if (radar_temperature_sensor_ != nullptr) {
             radar_temperature_sensor_->publish_state(temp);
         }
-        ESP_LOGD(TAG, "Radar temperature report: %d", temp);
+        ESP_LOGV(TAG, "Radar temperature report: %d", temp);
     } else {
         ESP_LOGD(TAG, "Unexpected radar temperature report format");
     }
@@ -1283,8 +1282,7 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
   // Direction/angle queries only arrive after radar finishes booting
   if (!radar_ready_) {
-    ESP_LOGE(TAG, "### RESPONSE: setting radar_ready=true (was %d, init_done=%d, SubID=0x%04X, uptime=%u)",
-             radar_ready_, init_done_, (uint16_t)attr_id, millis());
+    ESP_LOGI(TAG, "Radar ready (SubID=0x%04X, uptime=%u)", (uint16_t)attr_id, millis());
     radar_ready_ = true;
   }
 
@@ -1301,12 +1299,12 @@ void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &
 }
 
 void FP2Component::handle_reverse_read_request_(AttrId attr_id) {
-  ESP_LOGI(TAG, "Received Reverse Query for SubID 0x%04X", (uint16_t) attr_id);
+  ESP_LOGV(TAG, "Received Reverse Query for SubID 0x%04X", (uint16_t) attr_id);
 
   switch (attr_id) {
     case AttrId::DEVICE_DIRECTION:  // device_direction
       send_reverse_response_(attr_id, (uint8_t)fp2_accel_->get_orientation());
-      ESP_LOGD(TAG, "Sending Device Direction: %d", fp2_accel_->get_orientation());
+      ESP_LOGV(TAG, "Sending Device Direction: %d", fp2_accel_->get_orientation());
       break;
 
     case AttrId::ANGLE_SENSOR_DATA:  // angle_sensor_data
