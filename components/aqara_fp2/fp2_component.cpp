@@ -949,20 +949,25 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       handle_location_tracking_report_(payload);
       break;
 
-    case AttrId::TEMPERATURE:
+    case AttrId::TEMPERATURE: {
       // Temperature reports only arrive after radar finishes booting (~38s).
       // If init already fired during boot (commands ACKed but not applied),
       // re-run init now that the radar is truly ready.
-      if (!radar_ready_) {
-        ESP_LOGE(TAG, "### TEMPERATURE: radar boot complete at uptime=%u, init_done=%d — re-running init",
-                 millis(), init_done_);
+      static bool first_temp_seen = false;
+      if (!first_temp_seen) {
+        first_temp_seen = true;
         radar_ready_ = true;
+        ESP_LOGE(TAG, "### FIRST TEMPERATURE at uptime=%u — radar boot complete, init_done=%d",
+                 millis(), init_done_);
         if (init_done_) {
-          // Re-run init — the first init during boot was ACKed but not applied
-          ESP_LOGE(TAG, "### RE-INIT: sending all config commands again");
-          init_done_ = false;  // Allow check_initialization_ to fire again
+          ESP_LOGE(TAG, "### RE-INIT: resending all config commands to fully-booted radar");
+          init_done_ = false;
+          diag_acks = 0;
+          diag_drops = 0;
+          diag_init_at = 0;
         }
       }
+    }
       handle_temperature_report_(payload);
       break;
 
