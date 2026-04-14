@@ -153,6 +153,9 @@ aqara_fp2:
     name: "Total People"
   fall_detection:
     name: "Fall Detected"
+  fall_overtime:
+    name: "Fall Overtime"
+  fall_overtime_period: 30000ms     # Optional: prolonged fall timeout
   radar_temperature:
     name: "Radar Temperature"
   radar_software_version:
@@ -171,10 +174,13 @@ aqara_fp2:
     name: "Respiration Rate"
   heart_rate_deviation:
     name: "Heart Rate Deviation"
+  # sleep_mount_position: 2         # Optional: sleep-specific mount (0-3)
+  # sleep_zone_size: 1000           # Optional: sleep zone dimensions
 
   # Walking distance
   walking_distance:
     name: "Walking Distance"
+  dwell_time_enable: true            # Optional: enable dwell time tracking
 
   # Target tracking (throttled to 2Hz by default)
   target_tracking:
@@ -183,7 +189,7 @@ aqara_fp2:
   location_report_switch:
     name: "Report Targets"
 
-  # Auto-calibration
+  # Auto-calibration / maintenance
   calibrate_edge:
     name: "Calibrate Room Boundaries"
   calibrate_interference:
@@ -192,6 +198,8 @@ aqara_fp2:
     name: "Clear Room Boundaries"
   clear_interference:
     name: "Clear Interference"
+  delete_false_targets:
+    name: "Delete False Targets"
 
   # Global presence/motion
   global_zone:
@@ -271,6 +279,8 @@ show_zone_labels: true  # Show zone labels (default: true)
 |------------|------|-------------|
 | `people_count` | sensor | Total detected person count |
 | `fall_detection` | binary_sensor | Fall detected (via 0x0155 PEOPLE_COUNTING) |
+| `fall_overtime` | binary_sensor | Prolonged fall alert (person unable to get up) |
+| `fall_overtime_period` | config (ms) | How long a fall must persist before overtime triggers (default: not set) |
 | `radar_state` | text_sensor | Radar boot state: Booting / Init sent / Re-init / Ready / Presence |
 | `sleep_state` | text_sensor | none / awake / light / deep |
 | `sleep_presence` | binary_sensor | Sleep zone occupancy |
@@ -278,6 +288,9 @@ show_zone_labels: true  # Show zone labels (default: true)
 | `respiration_rate` | sensor (br/min) | Respiration rate from sleep monitoring |
 | `heart_rate_deviation` | sensor (bpm) | Heart rate deviation/variability from sleep monitoring |
 | `walking_distance` | sensor (m) | Cumulative walking distance |
+| `dwell_time_enable` | config (bool) | Enable dwell time tracking (default: false) |
+| `sleep_mount_position` | config (0-3) | Sleep-specific mounting position (default: not set) |
+| `sleep_zone_size` | config (uint32) | Sleep zone dimensions (default: not set) |
 | `global_zone.presence` | binary_sensor | Overall presence (0=empty, non-zero=occupied) |
 | `global_zone.motion` | binary_sensor | Overall motion (even=active, odd=inactive) |
 | `target_tracking` | text_sensor | Base64 target data (diagnostic) |
@@ -287,6 +300,7 @@ show_zone_labels: true  # Show zone labels (default: true)
 | `calibrate_interference` | button | Trigger interference auto-calibration |
 | `clear_edge` | button | Clear/reset room boundary calibration |
 | `clear_interference` | button | Clear/reset interference calibration |
+| `delete_false_targets` | button | Remove phantom/false targets from radar tracking |
 | `radar_temperature` | sensor | Radar chip temperature (diagnostic) |
 | `radar_software_version` | text_sensor | Radar firmware build number |
 
