@@ -57,6 +57,7 @@ CONF_GRID = "grid"
 CONF_SENSITIVITY = "sensitivity"
 
 # New Options
+CONF_DEBUG_MODE = "debug_mode"
 CONF_RADAR_RESET_PIN = "radar_reset_pin"
 CONF_RADAR_FIRMWARE_URL = "radar_firmware_url"
 CONF_PRESENCE_SENSITIVITY = "presence_sensitivity"
@@ -209,6 +210,7 @@ CONFIG_SCHEMA = (
             cv.GenerateID(): cv.declare_id(FP2Component),
             cv.Required("accel"): cv.use_id(AqaraFP2Accel),
 
+            cv.Optional(CONF_DEBUG_MODE, default=False): cv.boolean,
             cv.Optional(CONF_RADAR_RESET_PIN): pins.gpio_output_pin_schema,
             cv.Optional(CONF_RADAR_FIRMWARE_URL): cv.url,
             cv.Optional(CONF_MOUNTING_POSITION, default="left_corner"): cv.enum(
@@ -380,6 +382,8 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
+
+    cg.add(var.set_debug_mode(config[CONF_DEBUG_MODE]))
 
     if CONF_RADAR_FIRMWARE_URL in config:
         cg.add(var.set_radar_firmware_url(config[CONF_RADAR_FIRMWARE_URL]))

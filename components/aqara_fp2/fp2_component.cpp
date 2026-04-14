@@ -33,6 +33,9 @@ static uint16_t crc16(const uint8_t *data, size_t len) {
 
 void FP2Component::setup() {
   ESP_LOGI(TAG, "Setting up Aqara FP2...");
+  if (debug_mode_) {
+    ESP_LOGW(TAG, "[DBG] Debug mode ENABLED — verbose protocol logging active");
+  }
 
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
@@ -146,10 +149,18 @@ void FP2Component::loop() {
     return;
   }
 
+  int bytes_read = 0;
   while (available()) {
     uint8_t byte;
     read_byte(&byte);
     handle_incoming_byte_(byte);
+    bytes_read++;
+  }
+
+  if (debug_mode_ && bytes_read > 0) {
+    ESP_LOGD(TAG, "[DBG] loop: read %d UART bytes, init_done=%d, heartbeat=%u, queue=%d, waiting=0x%04X",
+             bytes_read, init_done_, last_heartbeat_millis_,
+             (int)command_queue_.size(), (uint16_t)waiting_for_ack_attr_id_);
   }
 
   check_initialization_();
@@ -162,10 +173,18 @@ void FP2Component::check_initialization_() {
 
   // Trigger init on first heartbeat. The command queue has timeouts and
   // retries that handle any boot-phase NACKs.
-  if (last_heartbeat_millis_ == 0)
+  if (last_heartbeat_millis_ == 0) {
+    // Log periodically while waiting for heartbeat
+    static uint32_t last_wait_log = 0;
+    if (debug_mode_ && millis() - last_wait_log > 5000) {
+      ESP_LOGW(TAG, "[DBG] Waiting for heartbeat... uptime=%u ms, no heartbeat yet", millis());
+      last_wait_log = millis();
+    }
     return;
+  }
 
-  ESP_LOGI(TAG, "Starting initialization sequence (uptime=%u ms)...", millis());
+  ESP_LOGW(TAG, "=== Starting initialization sequence (uptime=%u ms, heartbeat=%u ms) ===",
+           millis(), last_heartbeat_millis_);
     init_done_ = true;
 
     // 1. Basic Settings
@@ -359,6 +378,12 @@ void FP2Component::send_next_command_() {
   auto &cmd = command_queue_.front();
   static uint8_t next_tx_seq = 0;
 
+  if (debug_mode_) {
+    ESP_LOGI(TAG, "[DBG] TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
+             (int)cmd.type, (uint16_t)cmd.attr_id, cmd.data.size(),
+             cmd.retry_count, (int)command_queue_.size());
+  }
+
   // Build frame: [Sync][Ver][Ver][Seq][Op][Len][Len][Check][Payload][CRC][CRC]
   std::vector<uint8_t> frame;
   frame.push_back(0x55);  // Sync
@@ -535,7 +560,10 @@ void FP2Component::handle_incoming_byte_(uint8_t byte) {
 void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
                                         const std::vector<uint8_t> &payload) {
   OpCode op = (OpCode)type;
-  //ESP_LOGI(TAG, "Received t:%d sub_id:%d", type, sub_id);
+
+  if (debug_mode_) {
+    ESP_LOGI(TAG, "[DBG] RX frame: op=%d SubID=0x%04X len=%d", type, (uint16_t)attr_id, payload.size());
+  }
 
   switch (op) {
     case OpCode::ACK:
@@ -575,6 +603,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   // Process specific report types
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
+      if (debug_mode_ && last_heartbeat_millis_ == 0) {
+        ESP_LOGW(TAG, "[DBG] FIRST heartbeat received at uptime=%u ms", millis());
+      }
       last_heartbeat_millis_ = millis();
       if (payload.size() >= 4) {
         if (payload[2] == 0x00) {
@@ -1235,6 +1266,7 @@ std::string FP2Component::grid_to_hex_card_format(const GridMap &grid) {
 
 void FP2Component::dump_config() {
   ESP_LOGCONFIG(TAG, "Aqara FP2 (built " __DATE__ " " __TIME__ "):");
+  ESP_LOGCONFIG(TAG, "  Debug Mode: %s", debug_mode_ ? "ON" : "OFF");
   ESP_LOGCONFIG(TAG, "  Mounting Position: %d", mounting_position_);
   ESP_LOGCONFIG(TAG, "  Zones: %d", zones_.size());
   if (reset_pin_ != nullptr) {
