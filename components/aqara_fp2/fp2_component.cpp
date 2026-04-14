@@ -114,7 +114,7 @@ void FP2Component::clear_edge_calibration() {
   default_grid.fill(0);
   for (int r = 0; r < 14; r++) {
     default_grid[r * 2] = 0x3F;      // cols 2-7: bits 13-8
-    default_grid[r * 2 + 1] = 0xFC;  // cols 8-15: bits 7-2
+    default_grid[r * 2 + 1] = 0xFF;  // cols 8-15: all bits
   }
   enqueue_command_blob2_(AttrId::EDGE_MAP,
       std::vector<uint8_t>(default_grid.begin(), default_grid.end()));
@@ -218,7 +218,7 @@ void FP2Component::check_initialization_() {
       full_grid.fill(0);
       for (int r = 0; r < 14; r++) {
         full_grid[r * 2] = 0x3F;
-        full_grid[r * 2 + 1] = 0xFC;
+        full_grid[r * 2 + 1] = 0xFF;
       }
       enqueue_command_blob2_(AttrId::EDGE_MAP,
           std::vector<uint8_t>(full_grid.begin(), full_grid.end()));
