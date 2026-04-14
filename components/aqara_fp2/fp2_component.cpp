@@ -183,8 +183,8 @@ void FP2Component::check_initialization_() {
     return;
   }
 
-  ESP_LOGW(TAG, "=== Starting initialization sequence (uptime=%u ms, heartbeat=%u ms) ===",
-           millis(), last_heartbeat_millis_);
+  ESP_LOGE(TAG, "=== INIT START (uptime=%u ms, first heartbeat=%u ms ago) ===",
+           millis(), millis() - last_heartbeat_millis_);
     init_done_ = true;
 
     // 1. Basic Settings
@@ -329,10 +329,8 @@ void FP2Component::check_initialization_() {
       target_tracking_sensor_->set_has_state(false);
     }
 
-  // Note: zone people counting now uses native radar reports (SubID 0x0175)
-  // so location reporting is NOT auto-enabled. The user controls it via
-  // the Report Targets switch. Location-based counting in
-  // update_zone_people_counts_() is a fallback when reporting is active.
+  ESP_LOGE(TAG, "=== INIT COMPLETE: %d commands queued (uptime=%u ms) ===",
+           (int)command_queue_.size(), millis());
 }
 
 void FP2Component::process_command_queue_() {
@@ -378,11 +376,9 @@ void FP2Component::send_next_command_() {
   auto &cmd = command_queue_.front();
   static uint8_t next_tx_seq = 0;
 
-  if (debug_mode_) {
-    ESP_LOGI(TAG, "[DBG] TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
-             (int)cmd.type, (uint16_t)cmd.attr_id, cmd.data.size(),
-             cmd.retry_count, (int)command_queue_.size());
-  }
+  ESP_LOGW(TAG, "TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
+           (int)cmd.type, (uint16_t)cmd.attr_id, cmd.data.size(),
+           cmd.retry_count, (int)command_queue_.size());
 
   // Build frame: [Sync][Ver][Ver][Seq][Op][Len][Len][Check][Payload][CRC][CRC]
   std::vector<uint8_t> frame;
@@ -583,7 +579,7 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
 
 void FP2Component::handle_ack_(AttrId attr_id) {
   if (waiting_for_ack_attr_id_ == attr_id) {
-    ESP_LOGD(TAG, "ACK Received for 0x%04X", (uint16_t) attr_id);
+    ESP_LOGW(TAG, "ACK OK: 0x%04X (queue=%d)", (uint16_t) attr_id, (int)command_queue_.size());
     waiting_for_ack_attr_id_ = AttrId::INVALID;
     if (!command_queue_.empty()) {
       command_queue_.pop_front();
