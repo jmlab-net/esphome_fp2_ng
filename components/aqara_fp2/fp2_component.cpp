@@ -32,18 +32,19 @@ static uint16_t crc16(const uint8_t *data, size_t len) {
 }
 
 void FP2Component::setup() {
-  ESP_LOGI(TAG, "Setting up Aqara FP2...");
-  if (debug_mode_) {
-    ESP_LOGW(TAG, "[DBG] Debug mode ENABLED — verbose protocol logging active");
-  }
+  ESP_LOGE(TAG, "### SETUP: init_done=%d radar_ready=%d heartbeat=%u", init_done_, radar_ready_, last_heartbeat_millis_);
 
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
   init_done_ = false;
   radar_ready_ = false;
+  last_heartbeat_millis_ = 0;
+
+  ESP_LOGE(TAG, "### SETUP: state reset done, init_done=%d radar_ready=%d", init_done_, radar_ready_);
 
   // GPIO Reset
   perform_reset_();
+  ESP_LOGE(TAG, "### SETUP: perform_reset_ done");
 }
 
 void FP2Component::perform_reset_() {
@@ -168,32 +169,32 @@ void FP2Component::loop() {
 }
 
 void FP2Component::check_initialization_() {
-  if (init_done_) {
-    // Log once that init is already done (to confirm this branch is taken)
-    static bool init_done_logged = false;
-    if (!init_done_logged) {
-      ESP_LOGE(TAG, "### check_init: init_done=true, skipping (radar_ready=%d, heartbeat=%u)",
-               radar_ready_, last_heartbeat_millis_);
-      init_done_logged = true;
-    }
-    return;
+  static uint32_t call_count = 0;
+  call_count++;
+
+  // Log EVERY call for first 5 seconds, then every 5 seconds
+  if (call_count <= 10 || (millis() % 5000 < 50)) {
+    ESP_LOGE(TAG, "### check_init[%u]: init_done=%d radar_ready=%d heartbeat=%u queue=%d uptime=%u",
+             call_count, init_done_, radar_ready_, last_heartbeat_millis_,
+             (int)command_queue_.size(), millis());
   }
 
-  // Wait for radar to fully boot before sending config commands.
-  // The radar sends heartbeats for ~30-40 seconds during boot but does NOT
-  // process WRITE commands during this phase. Temperature (0x0128) or
-  // direction (0x0143) frames only arrive after boot completes.
+  if (init_done_)
+    return;
+
   if (!radar_ready_) {
+    // Log every 5 seconds while waiting
     static uint32_t last_wait_log = 0;
-    if (millis() - last_wait_log > 10000) {
-      ESP_LOGW(TAG, "Waiting for radar boot... uptime=%u ms, heartbeats=%s",
-               millis(), last_heartbeat_millis_ > 0 ? "YES" : "no");
+    if (millis() - last_wait_log > 5000) {
+      ESP_LOGE(TAG, "### WAITING: radar_ready=false, heartbeat=%u, uptime=%u",
+               last_heartbeat_millis_, millis());
       last_wait_log = millis();
     }
     return;
   }
 
-  ESP_LOGE(TAG, "=== INIT START (uptime=%u ms) — radar boot complete ===", millis());
+  ESP_LOGE(TAG, "### === INIT FIRING NOW === uptime=%u radar_ready=%d heartbeat=%u",
+           millis(), radar_ready_, last_heartbeat_millis_);
     init_done_ = true;
 
     // 1. Basic Settings
@@ -353,12 +354,12 @@ void FP2Component::process_command_queue_() {
         auto &cmd = command_queue_.front();
         cmd.retry_count++;
         if (cmd.retry_count >= MAX_RETRIES) {
-          ESP_LOGW(TAG, "Command 0x%04X timed out after %d retries. Dropping.",
-                   (uint16_t) cmd.attr_id, MAX_RETRIES);
+          ESP_LOGE(TAG, "### TIMEOUT DROP: 0x%04X after %d retries, queue=%d",
+                   (uint16_t) cmd.attr_id, MAX_RETRIES, (int)command_queue_.size());
           command_queue_.pop_front();
           waiting_for_ack_attr_id_ = AttrId::INVALID;
         } else {
-          ESP_LOGW(TAG, "Command 0x%04X timed out. Retrying (%d/%d)...",
+          ESP_LOGE(TAG, "### TIMEOUT RETRY: 0x%04X retry %d/%d",
                    (uint16_t) cmd.attr_id, cmd.retry_count, MAX_RETRIES);
           // Resend handled by send_next_command_ logic once waiting state calls
           // reset? Actually, we should just resend immediately
@@ -385,7 +386,7 @@ void FP2Component::send_next_command_() {
   auto &cmd = command_queue_.front();
   static uint8_t next_tx_seq = 0;
 
-  ESP_LOGW(TAG, "TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
+  ESP_LOGE(TAG, "### TX: op=%d SubID=0x%04X len=%d retry=%d queue=%d",
            (int)cmd.type, (uint16_t)cmd.attr_id, cmd.data.size(),
            cmd.retry_count, (int)command_queue_.size());
 
@@ -588,7 +589,7 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
 
 void FP2Component::handle_ack_(AttrId attr_id) {
   if (waiting_for_ack_attr_id_ == attr_id) {
-    ESP_LOGW(TAG, "ACK OK: 0x%04X (queue=%d)", (uint16_t) attr_id, (int)command_queue_.size());
+    ESP_LOGE(TAG, "### ACK OK: 0x%04X (queue=%d)", (uint16_t) attr_id, (int)command_queue_.size());
     waiting_for_ack_attr_id_ = AttrId::INVALID;
     if (!command_queue_.empty()) {
       command_queue_.pop_front();
@@ -608,8 +609,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
   // Process specific report types
   switch (attr_id) {
     case AttrId::RADAR_SW_VERSION:  // Heartbeat
-      if (debug_mode_ && last_heartbeat_millis_ == 0) {
-        ESP_LOGW(TAG, "[DBG] FIRST heartbeat received at uptime=%u ms", millis());
+      if (last_heartbeat_millis_ == 0) {
+        ESP_LOGE(TAG, "### FIRST HEARTBEAT at uptime=%u ms, init_done=%d radar_ready=%d",
+                 millis(), init_done_, radar_ready_);
       }
       last_heartbeat_millis_ = millis();
       if (payload.size() >= 4) {
@@ -938,8 +940,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
     case AttrId::TEMPERATURE:
       // Temperature reports only arrive after radar finishes booting
       if (!radar_ready_) {
+        ESP_LOGE(TAG, "### TEMPERATURE: setting radar_ready=true (was %d, init_done=%d, uptime=%u)",
+                 radar_ready_, init_done_, millis());
         radar_ready_ = true;
-        ESP_LOGI(TAG, "Temperature frame received — radar boot complete");
       }
       handle_temperature_report_(payload);
       break;
@@ -1090,8 +1093,9 @@ void FP2Component::handle_temperature_report_(const std::vector<uint8_t> &payloa
 void FP2Component::handle_response_(AttrId attr_id, const std::vector<uint8_t> &payload) {
   // Direction/angle queries only arrive after radar finishes booting
   if (!radar_ready_) {
+    ESP_LOGE(TAG, "### RESPONSE: setting radar_ready=true (was %d, init_done=%d, SubID=0x%04X, uptime=%u)",
+             radar_ready_, init_done_, (uint16_t)attr_id, millis());
     radar_ready_ = true;
-    ESP_LOGI(TAG, "Response frame received — radar boot complete");
   }
 
   // RESPONSE packets with only 2 bytes (just SubID) are Reverse Read Requests from the radar
