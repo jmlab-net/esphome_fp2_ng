@@ -257,13 +257,26 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_EN, true);
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_DATA, (uint8_t) 1);
     if (fall_overtime_period_ > 0) {
-      enqueue_command_(OpCode::WRITE, AttrId::FALL_OVERTIME_PERIOD, fall_overtime_period_);
+      // UINT32 — send as two uint16 WRITEs (high word then low word) via blob
+      std::vector<uint8_t> fop_data = {
+        (uint8_t)((fall_overtime_period_ >> 24) & 0xFF),
+        (uint8_t)((fall_overtime_period_ >> 16) & 0xFF),
+        (uint8_t)((fall_overtime_period_ >> 8) & 0xFF),
+        (uint8_t)(fall_overtime_period_ & 0xFF)
+      };
+      enqueue_command_blob2_(AttrId::FALL_OVERTIME_PERIOD, fop_data);
     }
     if (sleep_mount_position_ > 0) {
-      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, sleep_mount_position_);
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) sleep_mount_position_);
     }
     if (sleep_zone_size_ > 0) {
-      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_ZONE_SIZE, sleep_zone_size_);
+      std::vector<uint8_t> szs_data = {
+        (uint8_t)((sleep_zone_size_ >> 24) & 0xFF),
+        (uint8_t)((sleep_zone_size_ >> 16) & 0xFF),
+        (uint8_t)((sleep_zone_size_ >> 8) & 0xFF),
+        (uint8_t)(sleep_zone_size_ & 0xFF)
+      };
+      enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs_data);
     }
 
     // 2. Grids — all three must be sent every init for the radar to produce
