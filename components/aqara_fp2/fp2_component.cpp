@@ -239,7 +239,8 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, true); // BOOL
+    // SLEEP_REPORT_ENABLE is sent LAST — see end of init sequence.
+    // A READ in the 0x01xx range triggers scene mode 3, which clears sleep_report_enable.
     // Location reporting must stay enabled at the radar level — people counting
     // depends on it internally. The Report Targets switch controls whether
     // target data is published to the text sensor, not whether the radar tracks.
@@ -360,11 +361,15 @@ void FP2Component::check_initialization_() {
         enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t)((zone->id << 8) | 1));
     }
 
-    // Read hardware version from radar (appended to SW version string)
-    enqueue_read_(AttrId::HW_VERSION);
-    // enqueue_read_((AttrId) 0x302); // Read radar flash ID attribute
-    // enqueue_read_((AttrId) 0x303); // Read radar ID attribute
-    // enqueue_read_((AttrId) 0x305); // Read radar calibration result attribute
+    // HW_VERSION read removed — radar doesn't respond to READ requests for 0x0101,
+    // and any READ in the 0x01xx range triggers scene mode 3 which clears sleep_report_enable.
+
+    // SLEEP_REPORT_ENABLE must be the LAST command sent.
+    // The radar's scene mode system (FUN_00025dfc) maps 0x01xx WRITEs to scene mode 11,
+    // and 0x01xx READs to scene mode 3. Scene mode transition from 11→3 (FUN_00013d9c)
+    // explicitly clears sleep_report_enable. By sending it last with no subsequent READs,
+    // the radar transitions to scene mode 9 (sleep) and stays there.
+    enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, true);
 
     // 5. Publish grid sensors once initialization completes
     ESP_LOGI(TAG, "Publishing grid sensors: has_edge=%d edge_sensor=%p has_exit=%d exit_sensor=%p has_interference=%d interference_sensor=%p",
