@@ -384,21 +384,42 @@ The component sends empty defaults for any grid not configured in YAML. You only
 
 **Presence delay after OTA:** After an OTA flash, the radar may take 2-5 minutes before it begins producing presence/motion reports. The `radar_state` sensor tracks progress: Booting → Init sent → Re-init → Ready → Presence. Target tracking (0x0117) starts immediately, but presence reports are delayed. This is normal radar behaviour — a full power cycle may produce faster results.
 
+## Operating Modes
+
+![Aqara App Modes](images/aqara_app_modes.jpeg)
+
+The stock Aqara app presents four operating modes. All use the **same radar firmware** with different configuration — no firmware change is needed to switch modes.
+
+| Mode | Scene | Chirp | Mounting | Persons | Description |
+|------|-------|-------|----------|---------|-------------|
+| **Zone Detection** | 3 | Config A (10fps) | Wall | Multi | Presence, motion, zones, people counting |
+| **Fall Detection** | 8 | Config B (6.67fps) | Ceiling | Single | Fall detection with higher range resolution |
+| **Sleep Monitoring** | 9 | Config B (6.67fps) | Bedside | Single | Vital signs: heart rate, respiration, sleep state |
+| **Fall + Positioning** | 8 | Config B + tracking | Ceiling | Single | Fall detection with real-time target streaming |
+
+**Chirp Config A** (wall mount): 60 GHz, 14us ramp, 256 ADC samples, 72 chirps/frame at 10fps — optimised for fast movement tracking.
+
+**Chirp Config B** (ceiling/bedside): 60.624 GHz, 20us ramp, 512 ADC samples, 68 chirps/frame at 6.67fps — optimised for static/slow targets and micro-movement detection.
+
+The `sleep_mode_switch` toggles between Zone Detection (mode 3) and Sleep Monitoring (mode 9). These modes are **mutually exclusive** — the radar self-restarts on each toggle (~38 seconds).
+
+### Mounting Position Matters
+
+- **Fall detection** requires **ceiling mounting** — the algorithm assumes a top-down view to detect falls. The `fall_detection` sensor will not produce events from wall mounting.
+- **Sleep monitoring** requires **bedside placement** — the vital signs DSP detects chest micro-movements from the side. Configure `sleep_bed_height`, `overhead_height`, and `sleep_zone_size` for best results.
+- **Zone Detection** works from **wall or corner mounting** — the default mode for multi-person presence detection.
+
+### AI Learning
+
+The stock app's "AI Learning" feature triggers both edge and interference auto-calibration simultaneously while the room is empty. Use the `calibrate_edge` and `calibrate_interference` buttons together to replicate this — ensure the room is clear first.
+
 ## Known Limitations
 
-- **Sleep and presence are mutually exclusive** — The radar has two scene modes:
-  mode 3 (presence/motion detection) and mode 9 (vital signs/sleep monitoring).
-  They use different radar chirp configurations and cannot run simultaneously.
-  Use the `sleep_mode_switch` to toggle between them. The radar self-restarts
-  on each toggle (~38 seconds to resume).
+- **Fall detection requires ceiling mounting** — The radar's fall algorithm (SubID 0x0306)
+  assumes a top-down view. Wall-mounted sensors will not produce fall events.
 
-- **Sleep monitoring requires zone config** — Configure `sleep_bed_height`,
-  `overhead_height`, and `sleep_zone_size` in YAML for the DSP to know
-  where to measure vital signs.
-
-- **Fall detection** — Uses SubID 0x0306 from the radar's fall state machine.
-  Confirmed via Ghidra: SubID 0x0121 is angle sensor revision (not fall),
-  and the ontime field in 0x0155 is cumulative dwell time (not fall indicator).
+- **Sleep monitoring requires bedside placement** — The vital signs DSP needs
+  close-range side-on view of chest movements. Configure sleep zone params.
 
 - **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep)
   exist in the radar firmware. No REM detection.

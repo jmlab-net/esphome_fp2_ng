@@ -2,6 +2,19 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-15 — Operating Modes, Fall Detection Fix, Sleep Mode Switch
+
+### Documentation
+
+- **4 operating modes documented** — Zone Detection (mode 3, wall), Fall Detection
+  (mode 8, ceiling), Sleep Monitoring (mode 9, bedside), Fall + Positioning
+  (mode 8 + tracking). All use same radar firmware with different config.
+- **Two radar chirp configs** — Config A (10fps, wall) and Config B (6.67fps,
+  ceiling/sleep). Selected on radar restart based on scene mode.
+- **Mounting position requirements** — Fall detection needs ceiling, sleep needs
+  bedside, zone detection works from wall/corner.
+- **AI Learning** = simultaneous edge + interference auto-calibration.
+
 ## 2026-04-15 — Fall Detection Fix, Sleep Mode Switch, Scene Mode RE
 
 ### Critical Fixes
