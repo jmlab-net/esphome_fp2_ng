@@ -247,14 +247,37 @@ void FP2Component::check_initialization_() {
   if (last_heartbeat_millis_ == 0)
     return;
 
-  // When sleep mode is active, skip init entirely. Any 0x01xx WRITE
-  // triggers the radar's scene mode mapper to mode 3, which clears
-  // sleep_report_enable from flash. The radar already has all config
-  // in flash from previous inits — let it boot into mode 9 (sleep).
+  // When sleep mode is active, skip the full init (0x01xx WRITEs would
+  // trigger scene mode 3, clearing sleep_report_enable). Instead, send
+  // only sleep zone params and config sync — the radar is already in
+  // mode 9, so the scene mode handler sees 9==9 and doesn't clear sleep.
   if (sleep_mode_active_) {
     init_done_ = true;
     publish_radar_state_("Sleep");
-    ESP_LOGI(TAG, "Sleep mode active — skipping init to preserve scene mode 9");
+    ESP_LOGI(TAG, "Sleep mode active — sending sleep zone config only");
+
+    // Sleep zone params are RAM-only in the radar (lost on reboot).
+    // Re-send them so the DSP knows where to measure vital signs.
+    if (sleep_mount_position_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) sleep_mount_position_);
+    }
+    if (sleep_zone_size_ > 0) {
+      std::vector<uint8_t> szs = {
+        (uint8_t)((sleep_zone_size_ >> 24) & 0xFF),
+        (uint8_t)((sleep_zone_size_ >> 16) & 0xFF),
+        (uint8_t)((sleep_zone_size_ >> 8) & 0xFF),
+        (uint8_t)(sleep_zone_size_ & 0xFF)
+      };
+      enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs);
+    }
+    if (sleep_bed_height_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_BED_HEIGHT, sleep_bed_height_);
+    }
+    if (overhead_height_ > 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::OVERHEAD_HEIGHT, overhead_height_);
+    }
+    // Stock firmware sends 0x0203 (config sync) on first heartbeat in sleep mode
+    enqueue_command_(OpCode::WRITE, (AttrId) 0x0203, (uint8_t) 0);
     return;
   }
 
