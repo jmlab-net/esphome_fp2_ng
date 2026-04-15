@@ -126,9 +126,17 @@ void FP2Component::set_sleep_mode_enabled(bool enabled) {
   ESP_LOGI(TAG, "Sleep mode %s", enabled ? "ENABLED" : "DISABLED");
   sleep_mode_active_ = enabled;
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, enabled);
-  // WORK_MODE write triggers flash save + radar restart
+  // WORK_MODE write triggers flash save + radar self-restart
   enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, (uint8_t)(enabled ? 9 : 3));
   publish_radar_state_(enabled ? "Sleep" : "Booting");
+
+  // The WORK_MODE write causes the radar to self-restart (~38s boot).
+  // Reset our init state so we re-send all config on first heartbeat.
+  init_done_ = false;
+  radar_ready_ = false;
+  last_heartbeat_millis_ = 0;
+  // Reset the reinit_done static — need fresh double-init after restart
+  // (handled by setting init_done_ = false, reinit fires at 45s)
 }
 
 void FP2Component::trigger_edge_calibration() {
