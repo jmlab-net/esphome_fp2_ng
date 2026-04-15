@@ -557,6 +557,7 @@ protected:
   FP2OperatingModeSelect *operating_mode_select_{nullptr};
   bool sleep_mode_active_{false};
   ESPPreferenceObject operating_mode_pref_;
+  bool operating_mode_published_{false};
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   FP2ClearEdgeButton *clear_edge_button_{nullptr};

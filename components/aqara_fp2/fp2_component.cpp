@@ -1,4 +1,5 @@
 #include "fp2_component.h"
+#include "esphome/components/api/api_server.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/hal.h"
@@ -50,25 +51,13 @@ void FP2Component::setup() {
   radar_ready_ = false;
   last_heartbeat_millis_ = 0;
 
-  // Restore last operating mode from flash
+  // Restore last operating mode from flash (state published in loop when API connects)
   operating_mode_pref_ = global_preferences->make_preference<uint8_t>(fnv1_hash("fp2_operating_mode"));
   uint8_t saved_mode = 0;
   if (operating_mode_pref_.load(&saved_mode) && saved_mode < 4) {
     sleep_mode_active_ = (saved_mode == 2);  // Sleep Monitoring
     ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d)", saved_mode, sleep_mode_active_);
   }
-
-  // Defer state publish until API is connected (~10s after boot)
-  set_timeout("restore_mode", 10000, [this]() {
-    if (operating_mode_select_ != nullptr) {
-      uint8_t mode = 0;
-      if (operating_mode_pref_.load(&mode) && mode < 4) {
-        static const char *NAMES[] = {"Zone Detection", "Fall Detection", "Sleep Monitoring", "Fall + Positioning"};
-        operating_mode_select_->publish_state(NAMES[mode]);
-        ESP_LOGI(TAG, "Published restored operating mode: %s", NAMES[mode]);
-      }
-    }
-  });
 
   // GPIO Reset
   perform_reset_();
@@ -256,6 +245,17 @@ void FP2CalibrateInterferenceButton::press_action() {
 }
 
 void FP2Component::loop() {
+  // Publish restored operating mode once API is connected
+  if (!operating_mode_published_ && operating_mode_select_ != nullptr && api::global_api_server->is_connected()) {
+    uint8_t mode = 0;
+    if (operating_mode_pref_.load(&mode) && mode < 4) {
+      static const char *NAMES[] = {"Zone Detection", "Fall Detection", "Sleep Monitoring", "Fall + Positioning"};
+      operating_mode_select_->publish_state(NAMES[mode]);
+      ESP_LOGI(TAG, "Published restored operating mode: %s", NAMES[mode]);
+    }
+    operating_mode_published_ = true;
+  }
+
   // During OTA, bypass normal protocol and run XMODEM state machine
   if (ota_state_ != OtaState::IDLE) {
     ota_loop_();
