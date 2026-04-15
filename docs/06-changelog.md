@@ -2,7 +2,7 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
-## 2026-04-15 — Operating Modes, Fall Detection Fix, Sleep Mode Switch
+## 2026-04-15 — Operating Mode Select, Fall Detection Fix, Scene Mode RE
 
 ### Documentation
 
@@ -14,6 +14,8 @@ Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/espho
 - **Mounting position requirements** — Fall detection needs ceiling, sleep needs
   bedside, zone detection works from wall/corner.
 - **AI Learning** = simultaneous edge + interference auto-calibration.
+- **Operating mode persists across reboots** — saved to ESP32 flash via
+  ESPPreferences, restored on boot.
 
 ## 2026-04-15 — Fall Detection Fix, Sleep Mode Switch, Scene Mode RE
 

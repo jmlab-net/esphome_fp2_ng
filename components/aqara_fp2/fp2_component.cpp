@@ -50,6 +50,20 @@ void FP2Component::setup() {
   radar_ready_ = false;
   last_heartbeat_millis_ = 0;
 
+  // Restore last operating mode from flash
+  operating_mode_pref_ = global_preferences->make_preference<uint8_t>(fnv1_hash("fp2_operating_mode"));
+  uint8_t saved_mode = 0;
+  if (operating_mode_pref_.load(&saved_mode)) {
+    static const char *MODE_NAMES[] = {"Zone Detection", "Fall Detection", "Sleep Monitoring", "Fall + Positioning"};
+    if (saved_mode < 4) {
+      sleep_mode_active_ = (saved_mode == 2);  // Sleep Monitoring
+      ESP_LOGI(TAG, "Restored operating mode: %s (index=%d)", MODE_NAMES[saved_mode], saved_mode);
+      if (operating_mode_select_ != nullptr) {
+        operating_mode_select_->publish_state(MODE_NAMES[saved_mode]);
+      }
+    }
+  }
+
   // GPIO Reset
   perform_reset_();
   publish_radar_state_("Booting");
@@ -139,6 +153,13 @@ void FP2Component::set_operating_mode(const std::string &mode) {
 
   ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d)", mode.c_str(), scene_mode, sleep);
   sleep_mode_active_ = sleep;
+
+  // Save mode index to flash for restore on boot
+  uint8_t mode_index = 0;
+  if (mode == "Fall Detection") mode_index = 1;
+  else if (mode == "Sleep Monitoring") mode_index = 2;
+  else if (mode == "Fall + Positioning") mode_index = 3;
+  operating_mode_pref_.save(&mode_index);
 
   // Write sleep enable flag to radar RAM
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);

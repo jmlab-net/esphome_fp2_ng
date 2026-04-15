@@ -9,6 +9,7 @@
 #include "esphome/components/uart/uart.h"
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
+#include "esphome/core/preferences.h"
 
 #include "../aqara_fp2_accel/aqara_fp2_accel.h"
 
@@ -555,6 +556,7 @@ protected:
   FP2LocationSwitch *location_report_switch_{nullptr};
   FP2OperatingModeSelect *operating_mode_select_{nullptr};
   bool sleep_mode_active_{false};
+  ESPPreferenceObject operating_mode_pref_;
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   FP2ClearEdgeButton *clear_edge_button_{nullptr};
