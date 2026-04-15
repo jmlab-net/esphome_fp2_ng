@@ -50,18 +50,12 @@ void FP2Component::setup() {
   radar_ready_ = false;
   last_heartbeat_millis_ = 0;
 
-  // Restore last operating mode from flash
+  // Restore last operating mode from flash (state published later on first heartbeat)
   operating_mode_pref_ = global_preferences->make_preference<uint8_t>(fnv1_hash("fp2_operating_mode"));
   uint8_t saved_mode = 0;
-  if (operating_mode_pref_.load(&saved_mode)) {
-    static const char *MODE_NAMES[] = {"Zone Detection", "Fall Detection", "Sleep Monitoring", "Fall + Positioning"};
-    if (saved_mode < 4) {
-      sleep_mode_active_ = (saved_mode == 2);  // Sleep Monitoring
-      ESP_LOGI(TAG, "Restored operating mode: %s (index=%d)", MODE_NAMES[saved_mode], saved_mode);
-      if (operating_mode_select_ != nullptr) {
-        operating_mode_select_->publish_state(MODE_NAMES[saved_mode]);
-      }
-    }
+  if (operating_mode_pref_.load(&saved_mode) && saved_mode < 4) {
+    sleep_mode_active_ = (saved_mode == 2);  // Sleep Monitoring
+    ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d)", saved_mode, sleep_mode_active_);
   }
 
   // GPIO Reset
@@ -801,6 +795,14 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
       if (last_heartbeat_millis_ == 0) {
         ESP_LOGI(TAG, "First heartbeat at uptime=%u ms",
                  millis(), init_done_, radar_ready_);
+        // Publish restored operating mode now that API is likely connected
+        if (operating_mode_select_ != nullptr) {
+          uint8_t saved_mode = 0;
+          if (operating_mode_pref_.load(&saved_mode) && saved_mode < 4) {
+            static const char *MODE_NAMES[] = {"Zone Detection", "Fall Detection", "Sleep Monitoring", "Fall + Positioning"};
+            operating_mode_select_->publish_state(MODE_NAMES[saved_mode]);
+          }
+        }
       }
       last_heartbeat_millis_ = millis();
       if (payload.size() >= 4) {
