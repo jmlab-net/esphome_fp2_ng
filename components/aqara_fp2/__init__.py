@@ -379,7 +379,7 @@ SENSOR_MAP = {
     CONF_RADAR_STATE: (text_sensor_.new_text_sensor, "set_radar_state_sensor"),
     CONF_LOCATION_REPORT_SWITCH: (switch.new_switch, "set_location_report_switch"),
     CONF_SLEEP_MODE_SWITCH: (switch.new_switch, "set_sleep_mode_switch"),
-    CONF_OPERATING_MODE: (select.new_select, "set_operating_mode_select"),
+    # CONF_OPERATING_MODE handled separately (needs options kwarg)
     CONF_CALIBRATE_EDGE: (button.new_button, "set_calibrate_edge_button"),
     CONF_CALIBRATE_INTERFERENCE: (button.new_button, "set_calibrate_interference_button"),
     CONF_CLEAR_EDGE: (button.new_button, "set_clear_edge_button"),
@@ -488,14 +488,16 @@ async def to_code(config):
         if key in config:
             sens = await new(config[key])
             cg.add(getattr(var, funcName)(sens))
-            # Set options for operating mode select
-            if key == CONF_OPERATING_MODE:
-                cg.add(sens.traits.set_options([
-                    "Zone Detection",
-                    "Fall Detection",
-                    "Sleep Monitoring",
-                    "Fall + Positioning",
-                ]))
+
+    if CONF_OPERATING_MODE in config:
+        operating_mode_options = [
+            "Zone Detection",
+            "Fall Detection",
+            "Sleep Monitoring",
+            "Fall + Positioning",
+        ]
+        sel = await select.new_select(config[CONF_OPERATING_MODE], options=operating_mode_options)
+        cg.add(var.set_operating_mode_select(sel))
 
     if CONF_TARGET_TRACKING_INTERVAL in config:
         cg.add(var.set_target_tracking_interval(config[CONF_TARGET_TRACKING_INTERVAL]))
