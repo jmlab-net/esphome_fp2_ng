@@ -247,6 +247,17 @@ void FP2Component::check_initialization_() {
   if (last_heartbeat_millis_ == 0)
     return;
 
+  // When sleep mode is active, skip init entirely. Any 0x01xx WRITE
+  // triggers the radar's scene mode mapper to mode 3, which clears
+  // sleep_report_enable from flash. The radar already has all config
+  // in flash from previous inits — let it boot into mode 9 (sleep).
+  if (sleep_mode_active_) {
+    init_done_ = true;
+    publish_radar_state_("Sleep");
+    ESP_LOGI(TAG, "Sleep mode active — skipping init to preserve scene mode 9");
+    return;
+  }
+
   diag_init_at = millis();
   diag_init_used_ready = reinit_done;
   ESP_LOGI(TAG, "Init firing: uptime=%u reinit=%d heartbeat=%u",
