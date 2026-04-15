@@ -108,14 +108,23 @@ void FP2SleepModeSwitch::write_state(bool state) {
 }
 
 void FP2Component::set_sleep_mode_enabled(bool enabled) {
-  ESP_LOGI(TAG, "Sleep mode %s", enabled ? "ENABLED" : "DISABLED");
+  ESP_LOGI(TAG, "Sleep mode %s — writing to flash and resetting radar", enabled ? "ENABLED" : "DISABLED");
   sleep_mode_active_ = enabled;
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, enabled);
-  if (enabled) {
-    publish_radar_state_("Sleep");
-  }
-  // When disabling sleep, the radar will restart into mode 3 (presence).
-  // Presence reports will resume after the radar reboots (~38s + re-init).
+  publish_radar_state_(enabled ? "Sleep" : "Booting");
+
+  // The radar stores sleep_report_enable in flash but doesn't change the
+  // runtime scene mode until it reboots. Reset the radar so it reads the
+  // new flash value and enters scene mode 9 (sleep) or 3 (presence).
+  // Delay to allow the WRITE command to be sent and ACKed before reset.
+  set_timeout("radar_reset_for_sleep", 2000, [this]() {
+    ESP_LOGI(TAG, "Resetting radar for sleep mode change...");
+    perform_reset_();
+    // Re-init will fire on first heartbeat after reset
+    init_done_ = false;
+    radar_ready_ = false;
+    last_heartbeat_millis_ = 0;
+  });
 }
 
 void FP2Component::trigger_edge_calibration() {
