@@ -477,9 +477,21 @@ then determines which image to boot based on `SBL_WORK_MODE_OFFSET` and
 `SBL_SLEEP_ENABLE_OFFSET`.
 
 **What we still don't know:**
-- Whether the SBL erases the target QSPI areas before writing
-- Whether the Xtensa code at 0x400e6d90 passes a sub-range of the partition
-  (could not decompile the function that calls xmodem_new)
+- **Whether QSPI is erased before writing:** The erase function could not be
+  located in either the SBL or radar application firmware decompilation.
+  QSPI flash REQUIRES erasure before programming (writing can only clear bits,
+  not set them). Therefore erase MUST happen — the question is whether it's a
+  full chip erase, sector-by-sector, or block erase. This affects how long the
+  OTA takes and whether partial regions are preserved.
+- **Whether the Xtensa code at 0x400e6d90 passes a sub-range of the partition**
+  (could not decompile the function that calls xmodem_new).
+- **Exact handshake timing:** How long after SubID 0x0127 before the radar
+  sends the XMODEM 'C' handshake byte. Our code waits 20 seconds
+  (OTA_HANDSHAKE_TIMEOUT_MS).
+
+**Empirical testing would resolve all remaining unknowns.** A no-op test
+(flashing FW1 back to itself) would confirm: protocol compatibility, erase
+behaviour, timing, and whether stock images pass authentication.
 
 ### Completed: SubID Data Formats & Radar Firmware Validation
 
