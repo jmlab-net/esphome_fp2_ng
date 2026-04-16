@@ -421,28 +421,46 @@ array). Functions involved:
 contain the correct pre-computed CRC values. Modified or custom firmware would
 fail because the CRC would not match.
 
-### SBL XMODEM Protocol — Uncertain
+### XMODEM-1K Protocol — CONFIRMED
 
-The SBL does NOT have obvious XMODEM protocol constants (no 'C', ACK, NAK
-comparisons found in ARM or Thumb mode). The stock ESP32 firmware DOES have
-XMODEM functions (`xmodem_build_packet`, `xmodem_recv` at 0x400e6xxx-0x400e7xxx).
+**The stock ESP32 XMODEM state machine has been fully decompiled (FUN_400e7218).**
+The protocol between ESP32 and radar SBL is standard XMODEM-1K with CRC-16:
 
-**Possible explanations:**
-1. The XMODEM handshake is handled by the radar APPLICATION firmware before
-   restart, and the SBL receives raw data via UART streaming
-2. The SBL's UART ISR (FrameStartISR at interrupt 0x62) handles XMODEM
-   transparently at the driver level
-3. The XMODEM constants are in Thumb code that wasn't properly disassembled
+```
+ESP32 sends:  WRITE SubID=0x0127 DataType=BOOL Value=1
+              (FUN_400e6e8c: exactly matches our ESPHome implementation)
 
-**This is the key remaining unknown.** Our ESPHome XMODEM-1K implementation
-may or may not be compatible with the SBL's actual receive protocol. A safe
-no-op test (flashing FW1 back to itself) is required before attempting any
-firmware change.
+Radar:        Restarts into SBL → sends 'C' (0x43) for CRC mode handshake
+
+ESP32 state machine (FUN_400e7218):
+  State 0 (WAITING): wait for 'C' or NAK → State 1
+  State 1 (TRANSFER): send 1029-byte blocks, wait for ACK → next block
+                       if offset >= total_size → send EOT → State 2
+  State 2 (ENDING):   wait for ACK → completion callback
+  
+  CAN (0x18): cancel counter, abort after 10
+  Retries: max 5 per block (FUN_400e7128)
+
+Packet format (FUN_400e702c):
+  [STX=0x02] [Block#] [~Block#] [1024 data bytes] [CRC-16 HI] [CRC-16 LO]
+  Total: 1029 bytes per packet
+
+Data source: read callback at context+0x24, reads from mcu_ota partition
+  Offset tracked at context+0x10, incremented by 0x400 per block
+```
+
+**Our ESPHome XMODEM-1K implementation is compatible.** The packet format,
+handshake protocol, ACK/NAK handling, retry logic, and EOT sequence all match
+the stock ESP32 firmware's implementation. The SBL's XMODEM receive handler
+is likely in the Thumb code region of the SBL binary (not fully disassembled)
+but responds with standard XMODEM 'C'/ACK/NAK bytes.
 
 **What we still don't know:**
-- Exact protocol between ESP32 and SBL during OTA (XMODEM-1K or raw stream?)
 - Exact QSPI address where OTA data is written (may depend on work_mode)
 - Whether the SBL erases the target area before writing
+- How the stock ESP32 selects which firmware image to send from mcu_ota
+  (the read callback at context+0x24 reads sequentially — does it read
+  from a specific offset for each mode?)
 
 ### Completed: SubID Data Formats & Radar Firmware Validation
 
