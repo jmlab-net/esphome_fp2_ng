@@ -388,26 +388,51 @@ The component sends empty defaults for any grid not configured in YAML. You only
 
 ![Aqara App Modes](images/aqara_app_modes.jpeg)
 
-The stock Aqara app presents four operating modes. All use the **same radar firmware** with different configuration — no firmware change is needed to switch modes.
+The stock Aqara app presents four operating modes. Each mode uses a **different radar firmware image** stored in the ESP32's `mcu_ota` partition (4MB). The stock app flashes the appropriate firmware to the radar when switching modes.
 
-| Mode | Scene | Chirp | Mounting | Persons | Description |
-|------|-------|-------|----------|---------|-------------|
-| **Zone Detection** | 3 | Config A (10fps) | Wall | Multi | Presence, motion, zones, people counting |
-| **Fall Detection** | 8 | Config B (6.67fps) | Ceiling | Single | Fall detection with higher range resolution |
-| **Sleep Monitoring** | 9 | Config B (6.67fps) | Bedside | Single | Vital signs: heart rate, respiration, sleep state |
-| **Fall + Positioning** | 8 | Config B + tracking | Ceiling | Single | Fall detection with real-time target streaming |
+### Radar Firmware Images
 
-**Chirp Config A** (wall mount): 60 GHz, 14us ramp, 256 ADC samples, 72 chirps/frame at 10fps — optimised for fast movement tracking.
+The `mcu_ota` partition contains three TI IWR6843 firmware images (confirmed via binary analysis):
 
-**Chirp Config B** (ceiling/bedside): 60.624 GHz, 20us ramp, 512 ADC samples, 68 chirps/frame at 6.67fps — optimised for static/slow targets and micro-movement detection.
+| Firmware | Offset | Size | Source Path | Used By |
+|----------|--------|------|-------------|---------|
+| **FW1** | 0x000000 | 768KB | `../mss/` `../dss/` | Zone Detection |
+| **FW2** | 0x0C0000 | 896KB | `E:/workspace/update12/3d_people_counting_*/` | Fall Detection, Fall + Positioning |
+| **FW3** | 0x1A0000 | 708KB | `C:/ti/mmwave_industrial_toolbox_4_11_0/Vital_Signs/` | Sleep Monitoring |
 
-The `operating_mode` select switches between all four modes. They are **mutually exclusive** — the radar self-restarts on each change (~38 seconds). Use HA automations to switch modes on a schedule (e.g., Sleep Monitoring at bedtime, Zone Detection in the morning).
+### Capabilities by Firmware
 
-### Mounting Position Matters
+| Capability | FW1 | FW2 | FW3 |
+|---|---|---|---|
+| Presence detection | Yes | Yes | Yes |
+| Zone configuration | Yes | Yes | Yes |
+| Bed height / overhead height | Yes | Yes | Yes |
+| Basic people counting | Yes | --- | --- |
+| Fall area reporting | Yes | --- | --- |
+| Deep learning fall detection | --- | **Yes** | --- |
+| ML scoring / DSP scoring | --- | **Yes** | --- |
+| Height estimation | --- | **Yes** | --- |
+| Fall recognition timing | --- | **Yes** | --- |
+| 3D people counting | --- | **Yes** | **Yes** |
+| Vital signs chain | --- | --- | **Yes** |
+| Heart rate / respiration | --- | --- | **Yes** |
 
-- **Fall detection** requires **ceiling mounting** — the algorithm assumes a top-down view to detect falls. The `fall_detection` sensor will not produce events from wall mounting.
-- **Sleep monitoring** requires **bedside placement** — the vital signs DSP detects chest micro-movements from the side. Configure `sleep_bed_height`, `overhead_height`, and `sleep_zone_size` for best results.
-- **Zone Detection** works from **wall or corner mounting** — the default mode for multi-person presence detection.
+### Mode to Firmware Mapping
+
+| App Mode | Firmware | Mounting | Persons | Description |
+|----------|----------|----------|---------|-------------|
+| **Zone Detection** | FW1 | Wall | Multi | Presence, motion, zones, basic people counting |
+| **Fall Detection** | FW2 | Ceiling | Single | Deep learning fall detection with ML scoring |
+| **Sleep Monitoring** | FW3 | Bedside | Single | Vital signs: heart rate, respiration, sleep state |
+| **Fall + Positioning** | FW2 | Ceiling | Single | Fall detection with real-time target streaming |
+
+### Current Implementation Status
+
+The `operating_mode` select currently switches the radar's **scene mode** (3, 8, or 9) within the active firmware. This works correctly for Zone Detection (FW1 is the default firmware). However:
+
+- **Sleep Monitoring** and **Fall Detection** modes set the scene mode but do not produce their full feature set because they require **different radar firmware images** (FW3 and FW2 respectively).
+- The **radar firmware OTA** mechanism (XMODEM-1K via SubID 0x0127) is implemented but **untested**. Enabling full mode switching would require flashing the appropriate firmware image from the `mcu_ota` partition to the radar on each mode change.
+- All three firmware images share the same Aqara UART protocol (`communication.c`), so the ESPHome component's SubID handlers work with any of them.
 
 ### AI Learning
 
@@ -415,11 +440,14 @@ The stock app's "AI Learning" feature triggers both edge and interference auto-c
 
 ## Known Limitations
 
-- **Fall detection requires ceiling mounting** — The radar's fall algorithm (SubID 0x0306)
-  assumes a top-down view. Wall-mounted sensors will not produce fall events.
+- **Sleep monitoring requires radar firmware swap** — The vital signs processing
+  (heart rate, respiration) runs on FW3, a completely separate radar firmware
+  from the default FW1. The operating mode select sets scene mode 9 but does not
+  yet flash FW3 to the radar. Radar OTA is implemented but untested.
 
-- **Sleep monitoring requires bedside placement** — The vital signs DSP needs
-  close-range side-on view of chest movements. Configure sleep zone params.
+- **Advanced fall detection requires radar firmware swap** — FW2 has deep learning
+  fall detection with ML scoring, distinct from FW1's basic fall algorithm.
+  The basic fall detection (SubID 0x0306) in FW1 requires ceiling mounting.
 
 - **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep)
   exist in the radar firmware. No REM detection.

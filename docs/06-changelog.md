@@ -2,6 +2,24 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-16 — Three Radar Firmware Images Discovered
+
+### RE Discoveries
+
+- **Three distinct radar firmware images** found in the `mcu_ota` partition (4MB):
+  - FW1 (768KB): Zone Detection — basic people counting, fall area reporting
+  - FW2 (896KB): Fall Detection — deep learning, ML scoring, height estimation
+  - FW3 (708KB): Sleep Monitoring — vital signs chain, heart rate, respiration
+- **Each app mode requires a different firmware image** — not just scene mode config
+- **FW2 has deep learning fall detection** from `E:/workspace/update12/3d_people_counting_*/`
+  with ML scoring, DSP fall recognition, and height estimation. This is the advanced
+  fall detection used in ceiling-mount mode.
+- **FW3 is the TI Vital Signs demo** from `C:/ti/mmwave_industrial_toolbox_4_11_0/`
+  with its own MSS+DSS code for vital signs processing.
+- **Sleep monitoring requires FW3 to be flashed to the radar** — scene mode 9 alone
+  is insufficient. The vital signs DSP code doesn't exist in FW1.
+- **All three firmwares share the same Aqara UART protocol** (`communication.c`)
+
 ## 2026-04-15 — Operating Mode Select, Fall Detection Fix, Scene Mode RE
 
 ### Documentation
