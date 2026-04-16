@@ -404,11 +404,45 @@ image. The backup at 0x040000 is at a separate address and is NOT overwritten.
 | `xmodem_send_eot` | 0x400e7084 | Send EOT with retry |
 | `xmodem_crc16` | 0x400e6fe4 | CRC-16/CCITT |
 
+### Authentication Mechanism (Ghidra-confirmed: FUN_00000cd4)
+
+**The "authentication" is CRC integrity verification, NOT cryptographic signing.**
+
+FUN_00000cd4 uses the TI CRC hardware driver to compute a CRC signature over
+each RPRC segment, then compares it against pre-computed values stored in the
+MSTR header segment descriptors (at offsets +0x8a8 and +0x8ac in the segment
+array). Functions involved:
+- `FUN_0000b9a0` — get CRC transaction ID
+- `FUN_00007908` — compute CRC signature over data
+- `FUN_0000bcac` — read computed signature result
+- Compare against stored values → `"verify success!"` or `"verify failure!"`
+
+**Stock firmware images from `mcu_ota` will pass** because their MSTR headers
+contain the correct pre-computed CRC values. Modified or custom firmware would
+fail because the CRC would not match.
+
+### SBL XMODEM Protocol — Uncertain
+
+The SBL does NOT have obvious XMODEM protocol constants (no 'C', ACK, NAK
+comparisons found in ARM or Thumb mode). The stock ESP32 firmware DOES have
+XMODEM functions (`xmodem_build_packet`, `xmodem_recv` at 0x400e6xxx-0x400e7xxx).
+
+**Possible explanations:**
+1. The XMODEM handshake is handled by the radar APPLICATION firmware before
+   restart, and the SBL receives raw data via UART streaming
+2. The SBL's UART ISR (FrameStartISR at interrupt 0x62) handles XMODEM
+   transparently at the driver level
+3. The XMODEM constants are in Thumb code that wasn't properly disassembled
+
+**This is the key remaining unknown.** Our ESPHome XMODEM-1K implementation
+may or may not be compatible with the SBL's actual receive protocol. A safe
+no-op test (flashing FW1 back to itself) is required before attempting any
+firmware change.
+
 **What we still don't know:**
-- Exact address where OTA data is written (may depend on current work_mode)
-- Whether the SBL erases the target area before writing (likely yes)
-- The exact authentication mechanism in FUN_00006c0c
-- Whether stock mcu_ota images pass authentication as-is or need address patching
+- Exact protocol between ESP32 and SBL during OTA (XMODEM-1K or raw stream?)
+- Exact QSPI address where OTA data is written (may depend on work_mode)
+- Whether the SBL erases the target area before writing
 
 ### Completed: SubID Data Formats & Radar Firmware Validation
 
