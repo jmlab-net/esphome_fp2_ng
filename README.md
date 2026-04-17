@@ -32,7 +32,7 @@ Replaces the stock ESP32 firmware on the Aqara FP2 with ESPHome, while keeping t
 - **Zone presence and motion** — per-zone binary sensors with presence inference
 - **Factory-calibrated light sensor** — OPT3001 with per-unit NVS calibration
 - **Accelerometer corrections** — factory calibration from NVS
-- **Radar firmware OTA** — XMODEM-1K update mechanism (experimental)
+- **Radar firmware OTA** — XMODEM-1K (endpoint verified, requires 16MB partition layout)
 - **Auto-calibration** — room boundary and interference detection buttons
 
 All data stays local. No Aqara cloud dependency.
@@ -65,7 +65,7 @@ See [docs/06-changelog.md](docs/06-changelog.md) for the original changelog.
 - OPT3001 ambient light with factory NVS calibration
 - Accelerometer factory NVS corrections
 - Configurable target tracking publish rate (default 500ms)
-- Radar firmware OTA via XMODEM-1K (experimental)
+- Radar firmware OTA via XMODEM-1K (requires 16 MB partition layout; endpoint verified via handshake probe)
 - Data-bearing RESPONSE frame routing (fixes missing zone reports)
 - Improved Lovelace card: throttled updates, posture-aware targets, auto-tracking
 
@@ -86,7 +86,9 @@ See [docs/06-changelog.md](docs/06-changelog.md) for the original changelog.
 See [FLASHING.md](FLASHING.md) for hardware disassembly, wiring, and backup instructions.
 
 > **Important:** Back up the full flash before flashing ESPHome. The stock flash
-> contains factory calibration data and radar firmware that cannot be recovered.
+> contains factory calibration data AND the three TI radar firmware images that
+> cannot be recovered otherwise. Use [scripts/extract_radar_firmware.py](scripts/)
+> to pull the radar firmware out of your backup for later use.
 
 ### 2. ESPHome Configuration
 
@@ -443,22 +445,57 @@ All three DSS/application images share an **identical TI-RTOS/SYS-BIOS runtime**
 The `operating_mode` select currently switches the radar's **scene mode** (3, 8, or 9) within the active firmware (FW1). This works correctly for Zone Detection. However:
 
 - **Sleep Monitoring** and **advanced Fall Detection** require **different radar firmware images** (FW3 and FW2 respectively). The scene mode switch alone is insufficient — the vital signs DSP code does not exist in FW1, and FW2's fall detection algorithm is fundamentally different from FW1's.
-- The **radar firmware OTA** mechanism (XMODEM-1K via SubID 0x0127) is implemented but **untested**.
+- **Radar firmware OTA** (XMODEM-1K via SubID 0x0127) — endpoint verified on real hardware via the `radar_ota_probe` safe test. Full mode-switching OTA needs the 16 MB partition layout (see [FLASHING.md](FLASHING.md)).
 - All three firmware images share the same Aqara UART protocol, so the ESPHome component's SubID handlers work with any of them.
 
-### OTA Safety Notes
+### Radar OTA Setup (requires 16 MB partition layout)
 
-> **WARNING: Radar firmware OTA is untested. Incorrect use could brick the radar.**
+Radar OTA needs a `mcu_ota` data partition on the ESP32 to stage the firmware
+blob before streaming it to the radar over XMODEM-1K. This is only available
+with the **16 MB partition layout** — see [FLASHING.md](FLASHING.md) for the
+one-time serial flash.
+
+Once on 16 MB, add to YAML:
+```yaml
+aqara_fp2:
+  radar_firmware_url: https://raw.githubusercontent.com/JameZUK/esphome_fp2_ng/main/backup/radar_firmware.bin
+  radar_fw_stage:
+    name: "Stage Radar Firmware"
+  radar_ota:
+    name: "Trigger Radar OTA"
+  radar_ota_probe:
+    name: "Radar OTA Probe (safe test)"
+```
+
+Flow:
+1. **Radar OTA Probe** — sends SubID 0x0127, waits for XMODEM 'C' handshake, immediately aborts with CAN. No flash writes. Safe to run anytime. Confirms the bootloader endpoint works.
+2. **Stage Radar Firmware** — HTTPS downloads `radar_firmware.bin` (2.4 MB) to the `mcu_ota` partition. ~15–60 s.
+3. **Trigger Radar OTA** — streams the staged firmware to the radar over XMODEM. ~3 minutes.
+
+### What gets sent during radar OTA
+
+The shipped `backup/radar_firmware.bin` is a byte-identical copy of the stock
+Aqara `mcu_ota` partition content. It contains all three TI IWR6843 MSTR
+container images, packed contiguously, with **no stripping or transformation**:
+
+| Image | Offset      | Size    | MSTR version | Role |
+|-------|-------------|---------|--------------|------|
+| FW1   | `0x000000`  | 768 KB  | v1, 55 files | Zone Detection (default) |
+| FW2   | `0x0C0000`  | 896 KB  | v1, 55 files | Fall Detection (DSP scoring) |
+| FW3   | `0x1A0000`  | 708 KB  | v3, 55 files | Sleep Monitoring (vital signs) |
+
+Total 2,424,849 bytes,
+SHA256 `964d1fc24a78b1dcb1b8c18e3b4167ef475bb4b7cb87c68485909407ba31d2c2`.
+
+When you trigger radar OTA, **the full 2.4 MB blob is streamed**, same as the
+stock Aqara app. The radar's SBL handles the multi-image container internally
+and selects which FW to run based on its boot parameter table.
+
+### OTA Safety Notes
 
 The SBL (Secondary Boot Loader) has a **backup factory image fallback** — if the
 main application fails to load after OTA, the SBL attempts to boot a backup image.
 This significantly reduces (but does not eliminate) the risk of bricking.
-
-**Requirements for OTA:**
-- **Must use raw MSTR images from the `mcu_ota` partition**, NOT the extracted `.bin` files. The extracted files have stripped MSTR headers and include gap padding.
-- **CRC32 trailer (4 bytes after MSTR data) must be included** for the radar to verify integrity. All five CRC32 checksums have been validated.
-- **FW3 has no SBL** — it requires a compatible boot loader already on the radar's QSPI flash.
-- **Authentication check exists** — the SBL may reject unsigned firmware. Only images from the stock `mcu_ota` partition are known to pass.
 
 **Safety assessment (Ghidra-confirmed):**
 - **OTA writes to staging area (QSPI 0x510000)**, separate from application and
@@ -467,14 +504,17 @@ This significantly reduces (but does not eliminate) the risk of bricking.
   fall). If OTA verification fails, SBL loads backup — confirmed in decompiled code.
 - **SBL boot loader at 0x000000** is not in any application area — survives OTA.
 - **Power loss during XMODEM** corrupts only the staging area — safe.
-- **SBL corruption = bricked** — very unlikely since OTA doesn't touch SBL area.
+- **CAN abort (safe probe)** — the probe sends CAN x3 after receiving the 'C' handshake. No flash writes occur.
 
-**QSPI flash is larger than our backup.** Firmware images on the radar are at
-0x2D2000 (FW1), 0x392000 (FW2), 0x460000 (FW3) — different from the ESP32's
-mcu_ota layout. The ESP32 must reformat during OTA transfer.
+**Requirements:**
+- Must use raw MSTR images from the `mcu_ota` partition (the shipped
+  `backup/radar_firmware.bin` is correct).
+- CRC32 trailer after MSTR data is included and verified by the SBL.
+- FW3 has no SBL — it requires the SBL already on the radar's QSPI flash.
 
-**Recommended test sequence:** Flash FW1 to itself first (no-op test), then
-attempt FW3 if successful. See [07-firmware-analysis.md](docs/07-firmware-analysis.md)
+**Recommended test sequence:** Run `radar_ota_probe` first (zero-risk). If that
+succeeds, stage and trigger a FW1-to-FW1 OTA (same firmware) to validate the
+full flow before attempting FW2/FW3. See [07-firmware-analysis.md](docs/07-firmware-analysis.md)
 for the full SBL decompilation and QSPI flash map.
 
 ### AI Learning
@@ -486,7 +526,8 @@ The stock app's "AI Learning" feature triggers both edge and interference auto-c
 - **Sleep monitoring requires radar firmware swap** — The vital signs processing
   (heart rate, respiration) runs on FW3, a completely separate radar firmware
   from the default FW1. The vital signs DSP code does not exist in FW1 — scene
-  mode 9 alone is insufficient. Radar OTA (XMODEM-1K) is implemented but untested.
+  mode 9 alone is insufficient. Radar OTA (XMODEM-1K) is implemented and the
+  endpoint is verified; requires the 16 MB partition layout (see [FLASHING.md](FLASHING.md)).
 
 - **Advanced fall detection requires radar firmware swap** — FW2 has a DSP-based
   fall detection algorithm with scoring and height estimation, distinct from FW1's
