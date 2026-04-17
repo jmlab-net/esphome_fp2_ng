@@ -19,3 +19,15 @@ IMPLEMENTATION_SUMMARY.md
 VISUAL_MAP.md
 
 secrets.yaml
+
+# Full-flash backups contain WiFi credentials + HomeKit pairing keys.
+# NEVER commit these. Keep them OUTSIDE the repo.
+backup/aqara_fp2_homekit-*.bin
+backup/firmware_archive/
+backup/Log.txt
+
+# Other untracked things from field work
+backup/*.xapk
+backup/*.jpeg
+backup/*.jpg
+backup/*.png
