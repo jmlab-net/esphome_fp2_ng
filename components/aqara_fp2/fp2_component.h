@@ -703,6 +703,12 @@ protected:
   volatile bool ota_transfer_task_running_{false};
   static void ota_transfer_task_entry_(void *arg);
   void ota_transfer_task_run_();
+
+  // Raw UART trace window — when set_operating_mode() fires this, every TX and
+  // RX byte is logged in hex with timestamps for diagnostic purposes. Armed
+  // for 15 s after a mode switch is requested.
+  uint32_t mode_switch_trace_until_ms_{0};
+  void log_raw_trace_(const char *dir, const uint8_t *data, size_t len);
   std::string radar_firmware_url_;
 };
 

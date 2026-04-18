@@ -170,6 +170,11 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d)", mode.c_str(), scene_mode, sleep);
   sleep_mode_active_ = sleep;
 
+  // Arm raw UART trace for 15 s so we can see exactly what goes across during
+  // the mode-switch sequence. This is the "doesn't actually switch" debugging.
+  mode_switch_trace_until_ms_ = millis() + 15000;
+  ESP_LOGW(TAG, "=== MODE SWITCH TRACE: armed for 15 seconds ===");
+
   // Save mode index to flash for restore on boot
   uint8_t mode_index = 0;
   if (mode == "Fall Detection") mode_index = 1;
@@ -326,6 +331,7 @@ void FP2Component::loop() {
   while (available()) {
     uint8_t byte;
     read_byte(&byte);
+    log_raw_trace_("RX", &byte, 1);
     handle_incoming_byte_(byte);
     bytes_read++;
   }
@@ -665,6 +671,7 @@ void FP2Component::send_next_command_() {
   frame.push_back((crc >> 8) & 0xFF);
 
   write_array(frame);
+  log_raw_trace_("TX", frame.data(), frame.size());
   last_command_sent_millis_ = millis();
 
   // Only WRITE commands expect an ACK from the radar
@@ -1807,6 +1814,20 @@ void FP2Component::trigger_radar_fw_stage() {
 #else
   ESP_LOGE(TAG, "Stage firmware: HTTP download not available (radar_firmware_url not configured at build time)");
 #endif
+}
+
+void FP2Component::log_raw_trace_(const char *dir, const uint8_t *data, size_t len) {
+  if (millis() >= mode_switch_trace_until_ms_)
+    return;
+  // Format: "TRACE TX [N] HH HH HH ..." keep short so ESP log line limit isn't exceeded
+  char buf[4 + 3 * 64 + 1];
+  size_t dump = len > 64 ? 64 : len;
+  int pos = 0;
+  for (size_t i = 0; i < dump; i++) {
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "%02X ", data[i]);
+    if (pos + 4 >= (int) sizeof(buf)) break;
+  }
+  ESP_LOGW(TAG, "TRACE %s [%u]: %s%s", dir, (unsigned) len, buf, len > 64 ? "..." : "");
 }
 
 void FP2Component::ota_send_trigger_frame_() {
