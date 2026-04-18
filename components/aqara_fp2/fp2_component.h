@@ -174,7 +174,15 @@ enum class AttrId : uint16_t {
     WALK_DISTANCE_ALL               = 0x0174, // Walking distance data
 
     // --- Fall Detection ---
-    ANGLE_SENSOR_REV                = 0x0121, // Angle sensor revision (NOT fall detection)
+    // FALL_DETECTION_RESULT is the event the radar emits when it detects a fall.
+    // Confirmed via Ghidra of FW2 MSS (mode 8) 2026-04-18: FUN_0001db70 emits
+    // op=5 SubID=0x0121 with 1-byte payload (0=clear, 1=fall type A, 2=fall type B).
+    // Identity confirmed by the debug string "fall_detection:%d" at the emit site
+    // AND by the stock ESP dispatch table at 0x3ffb13b8 binding 0x0121 →
+    // radar_fall_detection. The prior label "ANGLE_SENSOR_REV" on this SubID was
+    // incorrect. The prior value 0x0306 for FALL_DETECTION_RESULT was fiction —
+    // no MSS firmware emits 0x0306.
+    FALL_DETECTION_RESULT           = 0x0121, // Fall detection event (uint8: 0=clear, 1=fall type A, 2=fall type B)
     FALL_DETECTION_STATE            = 0x0122, // Fall detection state (stock ESP32 handler, radar doesn't send)
     FALL_SENSITIVITY                = 0x0123, // Fall detection sensitivity
     FALL_OVERTIME_PERIOD            = 0x0134, // Fall overtime period
@@ -182,7 +190,6 @@ enum class AttrId : uint16_t {
     FALL_OVERTIME_REPORT            = 0x0136, // Fall overtime report (radar_fall_overtime_det)
     FALL_DELAY_TIME                 = 0x0179, // Delay before confirming fall (uint16)
     FALLDOWN_BLIND_ZONE             = 0x0180, // Fall detection exclusion zones (40B grid)
-    FALL_DETECTION_RESULT           = 0x0306, // ACTUAL fall detection from radar (uint8: 0=no fall, 1=fall)
 
     // --- Sleep Monitoring ---
     SLEEP_REPORT_ENABLE             = 0x0156, // Enable sleep reporting (BOOL)

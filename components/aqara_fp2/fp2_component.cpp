@@ -1079,12 +1079,16 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::FALL_DETECTION_RESULT:
-        // 0x0306 — ACTUAL fall detection result from radar's fall state machine.
-        // Sent as opcode 4 (RESPONSE) with UINT8: 0=no fall, 1=fall detected.
-        // Confirmed via Ghidra RE: radar FUN_000244f8 sends this from offset +0x589.
+        // 0x0121 — fall detection event from FW2's fall ML state machine.
+        // Emitted as op=5 with UINT8: 0=clear, 1=fall type A, 2=fall type B.
+        // Confirmed via Ghidra of FW2 MSS (fp2_radar_mss_fw2.bin): FUN_0001db70
+        // calls the frame serializer with SubID=0x121 and 1-byte payload. Debug
+        // string "fall_detection:%d" sits at the emit site. Only fires in
+        // work_mode=8 when the fall ML flags a ballistic upright→horizontal
+        // motion pattern — lying down calmly will NOT trigger it.
         if (payload.size() >= 4 && payload[2] == 0x00) {
             uint8_t state = payload[3];
-            ESP_LOGI(TAG, "Fall detection result (0x0306): %u", state);
+            ESP_LOGI(TAG, "Fall detection (0x0121): %u", state);
             if (fall_detection_sensor_ != nullptr) {
                 fall_detection_sensor_->publish_state(state != 0);
             }
