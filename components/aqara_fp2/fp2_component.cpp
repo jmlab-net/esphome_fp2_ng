@@ -1804,6 +1804,42 @@ void FP2Component::trigger_radar_fw_stage() {
 #endif
 }
 
+void FP2Component::ota_send_trigger_frame_() {
+  // Send OTA_SET_FLAG (SubID=0x0127 BOOL=true) as a raw one-shot frame,
+  // bypassing the command_queue_ / ACK-retry machinery. Stock firmware does
+  // not wait for a cluster ACK on this SubID — it installs raw-UART RX hooks
+  // and polls for the XMODEM 'C' handshake instead. See Ghidra RE notes:
+  // FUN_400e6e8c in fp2_aqara_fw1.bin at image_base 0x3ffadb5c.
+  static uint8_t next_tx_seq = 0;
+
+  std::vector<uint8_t> frame;
+  frame.push_back(0x55);                                 // Sync
+  frame.push_back(0x00);                                 // Version Hi
+  frame.push_back(0x01);                                 // Version Lo
+  frame.push_back(next_tx_seq++);                        // Seq
+  frame.push_back((uint8_t) OpCode::WRITE);              // Op
+  frame.push_back(0x00);                                 // Len Hi
+  frame.push_back(0x04);                                 // Len Lo
+
+  uint8_t sum = 0;
+  for (int i = 0; i < 7; i++)
+    sum += frame[i];
+  frame.push_back((uint8_t)(~(sum - 1)));                // Header checksum
+
+  frame.push_back(0x01);                                 // SubID Hi
+  frame.push_back(0x27);                                 // SubID Lo
+  frame.push_back(0x04);                                 // Type: BOOL
+  frame.push_back(0x01);                                 // Value: true
+
+  uint16_t crc = crc16(frame.data(), frame.size());
+  frame.push_back(crc & 0xFF);
+  frame.push_back((crc >> 8) & 0xFF);
+
+  ESP_LOGD(TAG, "TX: op=2 SubID=0x0127 len=4 (one-shot, no ACK)");
+  write_array(frame);
+  flush();
+}
+
 uint16_t FP2Component::xmodem_crc16_(const uint8_t *data, size_t len) {
   uint16_t crc = 0x0000;
   for (size_t i = 0; i < len; i++) {
@@ -2027,8 +2063,8 @@ void FP2Component::trigger_radar_ota_probe() {
   }
 
   ESP_LOGW(TAG, "=== Radar OTA Probe: SAFE TEST (no flash write) ===");
-  ESP_LOGW(TAG, "Step 1: send WRITE 0x0127 (OTA_SET_FLAG) and check for ACK");
-  ESP_LOGW(TAG, "Step 2: if ACK'd, watch for sustained 'C' (0x43) from XMODEM bootloader");
+  ESP_LOGW(TAG, "Step 1: send WRITE 0x0127 (OTA_SET_FLAG) as one-shot frame (no ACK wait)");
+  ESP_LOGW(TAG, "Step 2: watch for sustained 'C' (0x43) from XMODEM bootloader (20s)");
   ESP_LOGW(TAG, "Step 3: on handshake confirm, send CAN x3 to abort without writing flash");
 
   ota_probe_only_ = true;
@@ -2041,42 +2077,13 @@ void FP2Component::trigger_radar_ota_probe() {
   ota_probe_last_c_millis_ = 0;
   ota_probe_sof_count_ = 0;
 
-  uint32_t drops_before = diag_drops;
-  uint32_t acks_before = diag_acks;
+  // Stock firmware (Ghidra: FUN_400e6e8c) sends this frame once and does NOT
+  // wait for a cluster ACK. The radar never emits one for SubID 0x0127 — it
+  // switches its UART into raw XMODEM mode and emits 'C' bytes instead.
+  // Previous implementations that waited for ACK falsely concluded the trigger
+  // was rejected, then aborted before ever seeing the handshake.
+  ota_send_trigger_frame_();
 
-  enqueue_command_(OpCode::WRITE, AttrId::OTA_SET_FLAG, true);
-
-  // Flush the OTA_SET_FLAG command through the normal protocol to see
-  // if the radar ACKs it. If it drops, the radar firmware doesn't accept
-  // this SubID — no point waiting for a phantom XMODEM handshake.
-  //
-  // We're blocking inside press_action(), so loop() is not running. We must
-  // manually drain incoming UART bytes through the frame decoder, otherwise
-  // the ACK frame sits in the RX buffer and ACK_TIMEOUT fires every time.
-  uint32_t flush_start = millis();
-  while (!command_queue_.empty() && (millis() - flush_start) < 3000) {
-    process_command_queue_();
-    while (available()) {
-      uint8_t byte;
-      read_byte(&byte);
-      handle_incoming_byte_(byte);
-    }
-    delay(10);
-  }
-
-  bool got_drop = (diag_drops > drops_before);
-  bool got_ack = (diag_acks > acks_before);
-
-  if (got_drop || !got_ack) {
-    ESP_LOGE(TAG, "=== PROBE RESULT: OTA TRIGGER REJECTED ===");
-    ESP_LOGE(TAG, "Radar did not ACK SubID 0x0127 within 3 retries.");
-    ESP_LOGE(TAG, "This firmware revision does not accept this OTA trigger as written.");
-    ESP_LOGE(TAG, "Next steps: inspect stock ESP32 firmware for exact 0x0127 payload / sequence.");
-    ota_probe_only_ = false;
-    return;
-  }
-
-  ESP_LOGW(TAG, "OTA_SET_FLAG ACK'd. Watching for XMODEM handshake (20s)...");
   ota_state_ = OtaState::WAITING_HANDSHAKE;
   ota_state_start_millis_ = millis();
 }
@@ -2131,22 +2138,20 @@ void FP2Component::trigger_radar_ota() {
            ota_firmware_size_, blocks, blocks / 50 + 10);
   ESP_LOGW(TAG, "WARNING: Do not power off the device during transfer!");
 
-  // Send OTA trigger command via protocol
-  enqueue_command_(OpCode::WRITE, AttrId::OTA_SET_FLAG, true);
-
   ota_firmware_offset_ = 0;
   ota_block_num_ = 1;
   ota_retry_count_ = 0;
   ota_can_count_ = 0;
+  ota_probe_c_count_ = 0;
+  ota_probe_last_c_millis_ = 0;
+  ota_probe_sof_count_ = 0;
+
+  // Send OTA trigger as a one-shot frame. See ota_send_trigger_frame_() for
+  // why we bypass the queue/ACK machinery here.
+  ota_send_trigger_frame_();
+
   ota_state_ = OtaState::WAITING_HANDSHAKE;
   ota_state_start_millis_ = millis();
-
-  // Flush the command queue immediately so the OTA flag gets sent
-  // before we switch to XMODEM mode
-  while (!command_queue_.empty()) {
-    process_command_queue_();
-    delay(10);
-  }
 }
 
 void FP2Component::ota_send_current_block_() {
@@ -2245,12 +2250,12 @@ void FP2Component::ota_loop_() {
       if (now - ota_state_start_millis_ > OTA_HANDSHAKE_TIMEOUT_MS) {
         if (ota_probe_only_) {
           ESP_LOGE(TAG, "=== PROBE RESULT: NO XMODEM HANDSHAKE (20s) ===");
-          ESP_LOGE(TAG, "OTA_SET_FLAG was ACK'd but radar stayed in normal protocol mode");
+          ESP_LOGE(TAG, "Trigger frame sent but radar never emitted 'C' (0x43)");
           ESP_LOGE(TAG, "  isolated 'C' bytes: %u (need >=2 for success)", ota_probe_c_count_);
           ESP_LOGE(TAG, "  Aqara SOF (0x55) bytes seen: %u", ota_probe_sof_count_);
           if (ota_probe_sof_count_ > 0) {
             ESP_LOGE(TAG, "  -> radar is still emitting normal protocol frames");
-            ESP_LOGE(TAG, "  -> setting 0x0127=1 is insufficient to trigger XMODEM bootloader");
+            ESP_LOGE(TAG, "  -> 0x0127 alone may be insufficient; check for 2-stage init");
           }
         } else {
           ESP_LOGE(TAG, "OTA: handshake timeout (20s), aborting");

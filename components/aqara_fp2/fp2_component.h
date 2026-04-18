@@ -692,6 +692,7 @@ protected:
   void ota_loop_();
   void ota_send_current_block_();
   void ota_send_eot_();
+  void ota_send_trigger_frame_();
   uint32_t ota_detect_firmware_size_();
   bool ota_download_firmware_();
   static uint16_t xmodem_crc16_(const uint8_t *data, size_t len);
