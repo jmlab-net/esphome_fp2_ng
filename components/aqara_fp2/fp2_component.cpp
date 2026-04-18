@@ -1201,39 +1201,35 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::SLEEP_DATA:
-        // Sleep tracking data: BLOB2 containing IEEE 754 floats in LE byte order.
-        // Confirmed from radar firmware debug strings at 0x1a1394:
-        //   "heartRate = %.0f"    (offset 0, 4 bytes LE float)
-        //   "breathRate = %.0f"   (offset 4, 4 bytes LE float)
-        //   "heartDev = %.0f"     (offset 8, 4 bytes LE float — heart rate deviation)
-        //   "breathingDev = %.0f" (offset 12, 4 bytes LE float — breath deviation)
-        // Stock ESP32 firmware copies first 12 bytes (3 floats), drops breathingDev.
-        // Radar firmware built from TI Vital Signs demo at:
-        //   C:/ti/mmwave_industrial_toolbox_4_11_0/labs/Vital_Signs/
+        // Sleep-state metadata: BLOB2 of 12 bytes emitted by vitalsigns firmware.
+        // Previous IEEE-754-floats interpretation was INCORRECT. Ghidra of
+        // fp2_radar_vitalsigns.bin FUN_00006c84 (emits via FUN_0001c71c(5,0x159,6,...))
+        // shows 12 individual byte fields from ctx struct offsets +0x85..+0x90:
+        //   blob[0]  sleep track id / person_id
+        //   blob[1]  count
+        //   blob[2]  motion
+        //   blob[3]  sleep_stage (0 = idle)
+        //   blob[4]  reserved / posture
+        //   blob[5]  confidence  (≈ 100 at idle)
+        //   blob[6]  bed_state / event
+        //   blob[7]  reserved
+        //   blob[8]  secondary confidence (≈ 100 at idle)
+        //   blob[9..11]  reserved / terminator
+        // HR and BR are NOT in this blob — they're on SubID 0x0117 in mode 9
+        // (see handle_location_tracking_report_). Field semantics MEDIUM confidence.
         if (payload.size() >= 5 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 12 && payload.size() >= 17) {
-                // Parse as LE IEEE 754 floats (radar is ARM Cortex-R4F, LE)
-                float heart_rate, resp_rate, heart_dev;
-                memcpy(&heart_rate, &payload[5], 4);
-                memcpy(&resp_rate, &payload[9], 4);
-                memcpy(&heart_dev, &payload[13], 4);
-                ESP_LOGI(TAG, "Sleep data: heart=%.1f bpm, resp=%.1f br/min, heartDev=%.1f",
-                         heart_rate, resp_rate, heart_dev);
-                if (heart_rate_sensor_ != nullptr) {
-                    heart_rate_sensor_->publish_state(heart_rate);
-                }
-                if (respiration_rate_sensor_ != nullptr) {
-                    respiration_rate_sensor_->publish_state(resp_rate);
-                }
-                if (heart_rate_dev_sensor_ != nullptr) {
-                    // Third field is heart rate deviation, not "body movement"
-                    // Repurposed as a sleep quality indicator
-                    heart_rate_dev_sensor_->publish_state(heart_dev);
-                }
+                const uint8_t *b = &payload[5];
+                ESP_LOGI(TAG,
+                         "Sleep blob 0x159: tid=%u count=%u motion=%u stage=%u "
+                         "posture=%u conf=%u bed=%u conf2=%u "
+                         "(raw %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X)",
+                         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[8],
+                         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                         b[8], b[9], b[10], b[11]);
             } else {
-                // Log raw hex for unexpected sizes
-                ESP_LOGW(TAG, "Sleep data unexpected size %d bytes", blob_len);
+                ESP_LOGW(TAG, "Sleep blob 0x159 unexpected size %d bytes", blob_len);
             }
         }
         break;
@@ -1372,13 +1368,39 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 }
 
 void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &payload) {
-  // Ignore stale data if location reporting has been disabled
-  if (!this->location_reporting_active_) {
+  // Payload: [SubID 2] [Type 0x06(BLOB2)] [Len 2] [data...]
+  if (payload.size() < 6 || payload[2] != 0x06) {
+    return;
+  }
+  uint16_t blob_len = ((uint16_t) payload[3] << 8) | (uint16_t) payload[4];
+
+  // In work_mode=9 (sleep/vital signs firmware), the same SubID 0x0117 carries
+  // heart-rate and respiration-rate data instead of target tracking. Confirmed
+  // via Ghidra of fp2_radar_vitalsigns.bin FUN_00006c84:
+  //   blob[0]       = 1 (header)
+  //   blob[1]       = track_id
+  //   blob[2..3]    = round(HR_bpm     * 100) as uint16 big-endian
+  //   blob[4..5]    = round(BR_per_min * 100) as uint16 big-endian
+  //   blob[6..14]   = zero padding
+  // Scaling constant 100.0f verified as 0x42C80000 in the firmware.
+  if (sleep_mode_active_ && blob_len == 15 && payload.size() >= 20) {
+    uint8_t track_id = payload[6];
+    uint16_t hr_scaled = ((uint16_t) payload[7] << 8) | (uint16_t) payload[8];
+    uint16_t br_scaled = ((uint16_t) payload[9] << 8) | (uint16_t) payload[10];
+    float hr = hr_scaled / 100.0f;
+    float br = br_scaled / 100.0f;
+    ESP_LOGI(TAG, "Vitals 0x117: tid=%u HR=%.1f bpm BR=%.1f br/min", track_id, hr, br);
+    if (heart_rate_sensor_ != nullptr && hr_scaled > 0) {
+      heart_rate_sensor_->publish_state(hr);
+    }
+    if (respiration_rate_sensor_ != nullptr && br_scaled > 0) {
+      respiration_rate_sensor_->publish_state(br);
+    }
     return;
   }
 
-  // Payload: [SubID 2] [Type 0x06(BLOB2)] [Len 2] [Count 1] [Target 14]...
-  if (payload.size() < 6 || payload[2] != 0x06) {
+  // Modes 3 / 8: location tracking per-target.
+  if (!this->location_reporting_active_) {
     return;
   }
 
