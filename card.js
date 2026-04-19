@@ -56,24 +56,41 @@ class AqaraFP2Card extends HTMLElement {
   }
 
   // Watch HA entity states that, if changed, invalidate the cached mapConfig
-  // (fetched one-shot at init). Currently: mounting_position. Could extend to
-  // left_right_reverse once that's exposed as an entity.
+  // (fetched one-shot at init):
+  //   select.<device>_mounting_position  — mount change triggers reinit
+  //   sensor.<device>_edge_grid_hex      — edge calibration / manual edit
+  //   sensor.<device>_interference_grid_hex
+  //   sensor.<device>_entry_exit_grid_hex
+  // Any of them changing triggers a debounced fetchMapConfig() so the canvas
+  // redraws the new layer without a page reload. Each gets its own "last
+  // seen" slot so we don't cross-trigger.
   _detectConfigChanges(hass) {
     if (!this.config || !this.config.entity_prefix) return;
     const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
-    const mount = hass.states[`select.${deviceName}_mounting_position`];
-    const mountState = mount ? mount.state : null;
-    if (mountState && this._lastKnownMount !== undefined && mountState !== this._lastKnownMount) {
-      // Small delay so the backend has time to finish persisting + kicking
-      // the re-init before we ask for the fresh map_config. This also
-      // debounces against rapid hass state bursts during re-init.
-      if (this._mountRefetchTimer) clearTimeout(this._mountRefetchTimer);
-      this._mountRefetchTimer = setTimeout(() => {
-        this._mountRefetchTimer = null;
+    const watched = [
+      ['_lastKnownMount',         `select.${deviceName}_mounting_position`],
+      ['_lastKnownEdgeHex',       `sensor.${deviceName}_edge_grid_hex`],
+      ['_lastKnownInterfHex',     `sensor.${deviceName}_interference_grid_hex`],
+      ['_lastKnownEntryExitHex',  `sensor.${deviceName}_entry_exit_grid_hex`],
+    ];
+    let dirty = false;
+    for (const [slot, entityId] of watched) {
+      const st = hass.states[entityId];
+      const v = st ? st.state : null;
+      if (v != null && this[slot] !== undefined && v !== this[slot]) {
+        dirty = true;
+      }
+      this[slot] = v;
+    }
+    if (dirty) {
+      // Debounce — a cascade of state updates fires during radar re-init
+      // or a multi-sensor republish. One refetch covers all of them.
+      if (this._configRefetchTimer) clearTimeout(this._configRefetchTimer);
+      this._configRefetchTimer = setTimeout(() => {
+        this._configRefetchTimer = null;
         this.fetchMapConfig();
       }, 500);
     }
-    this._lastKnownMount = mountState;
   }
 
   _doUpdate() {
