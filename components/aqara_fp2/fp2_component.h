@@ -239,6 +239,15 @@ protected:
   FP2Component *parent_{nullptr};
 };
 
+class FP2MountingPositionSelect : public select::Select {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+
+protected:
+  void control(const std::string &value) override;
+  FP2Component *parent_{nullptr};
+};
+
 class FP2CalibrateEdgeButton : public button::Button {
 public:
   void set_parent(FP2Component *parent) { parent_ = parent; }
@@ -397,6 +406,15 @@ public:
     sel->set_parent(this);
   }
   void set_operating_mode(const std::string &mode);
+
+  void set_mounting_position_select(FP2MountingPositionSelect *sel) {
+    mounting_position_select_ = sel;
+    sel->set_parent(this);
+  }
+  // Runtime mount-position change: writes WALL_CORNER_POS to the radar,
+  // persists to flash, and forces a full radar re-init so the new orientation
+  // takes effect. Accepts "Wall", "Left Corner", "Right Corner" (case-sensitive).
+  void set_mounting_position_runtime(const std::string &value);
 
   void set_calibrate_edge_button(FP2CalibrateEdgeButton *btn) {
     calibrate_edge_button_ = btn;
@@ -618,9 +636,12 @@ protected:
   text_sensor::TextSensor *target_tracking_sensor_{nullptr};
   FP2LocationSwitch *location_report_switch_{nullptr};
   FP2OperatingModeSelect *operating_mode_select_{nullptr};
+  FP2MountingPositionSelect *mounting_position_select_{nullptr};
   bool sleep_mode_active_{false};
   ESPPreferenceObject operating_mode_pref_;
+  ESPPreferenceObject mounting_position_pref_;
   bool operating_mode_published_{false};
+  bool mounting_position_published_{false};
 
   // Runtime-edited grid persistence. Keys are stable across YAML/firmware
   // rebuilds (layer identity only), so hand-painted grids survive reflashes

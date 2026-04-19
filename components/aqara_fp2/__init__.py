@@ -38,6 +38,7 @@ aqara_fp2_ns = cg.esphome_ns.namespace("aqara_fp2")
 FP2Component = aqara_fp2_ns.class_("FP2Component", cg.Component, uart.UARTDevice)
 FP2LocationSwitch = aqara_fp2_ns.class_("FP2LocationSwitch", switch.Switch)
 FP2OperatingModeSelect = aqara_fp2_ns.class_("FP2OperatingModeSelect", select.Select)
+FP2MountingPositionSelect = aqara_fp2_ns.class_("FP2MountingPositionSelect", select.Select)
 FP2CalibrateEdgeButton = aqara_fp2_ns.class_("FP2CalibrateEdgeButton", button.Button)
 FP2CalibrateInterferenceButton = aqara_fp2_ns.class_("FP2CalibrateInterferenceButton", button.Button)
 FP2ClearEdgeButton = aqara_fp2_ns.class_("FP2ClearEdgeButton", button.Button)
@@ -103,6 +104,7 @@ CONF_OVERHEAD_HEIGHT = "overhead_height"
 CONF_FALL_DELAY_TIME = "fall_delay_time"
 CONF_FALLDOWN_BLIND_ZONE = "falldown_blind_zone"
 CONF_OPERATING_MODE = "operating_mode"
+CONF_MOUNTING_POSITION_SELECT = "mounting_position_select"
 CONF_POSTURE = "posture"
 CONF_SLEEP_STATE = "sleep_state"
 CONF_SLEEP_PRESENCE = "sleep_presence"
@@ -250,6 +252,10 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_OPERATING_MODE): select.select_schema(
                 FP2OperatingModeSelect,
                 icon="mdi:radar",
+            ),
+            cv.Optional(CONF_MOUNTING_POSITION_SELECT): select.select_schema(
+                FP2MountingPositionSelect,
+                icon="mdi:compass",
             ),
             cv.Optional(CONF_CALIBRATE_EDGE): button.button_schema(
                 FP2CalibrateEdgeButton,
@@ -521,6 +527,13 @@ async def to_code(config):
         ]
         sel = await select.new_select(config[CONF_OPERATING_MODE], options=operating_mode_options)
         cg.add(var.set_operating_mode_select(sel))
+
+    if CONF_MOUNTING_POSITION_SELECT in config:
+        mount_position_options = ["Wall", "Left Corner", "Right Corner"]
+        msel = await select.new_select(
+            config[CONF_MOUNTING_POSITION_SELECT], options=mount_position_options
+        )
+        cg.add(var.set_mounting_position_select(msel))
 
     if CONF_TARGET_TRACKING_INTERVAL in config:
         cg.add(var.set_target_tracking_interval(config[CONF_TARGET_TRACKING_INTERVAL]))

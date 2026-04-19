@@ -70,6 +70,17 @@ void FP2Component::setup() {
     ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d)", saved_mode, sleep_mode_active_);
   }
 
+  // Restore mount position from flash. Overrides the YAML-compiled default
+  // so user's last runtime pick wins across reboots. Valid codes: 1=wall,
+  // 2=left corner, 3=right corner. The value is written to the radar by the
+  // existing WALL_CORNER_POS send during init (fp2_component.cpp:~489).
+  mounting_position_pref_ = global_preferences->make_preference<uint8_t>(fnv1_hash("fp2_mounting_position"));
+  uint8_t saved_mount = 0;
+  if (mounting_position_pref_.load(&saved_mount) && saved_mount >= 1 && saved_mount <= 3) {
+    mounting_position_ = saved_mount;
+    ESP_LOGI(TAG, "Restored mounting position code=%d", saved_mount);
+  }
+
   // Restore runtime-edited grids from flash. Must run before the init queue
   // fires (check_initialization_ in loop) so restored values are what get
   // sent to the radar on boot.
@@ -202,6 +213,13 @@ void FP2LocationSwitch::write_state(bool state) {
 void FP2OperatingModeSelect::control(const std::string &value) {
   if (this->parent_ != nullptr) {
     this->parent_->set_operating_mode(value);
+  }
+  this->publish_state(value);
+}
+
+void FP2MountingPositionSelect::control(const std::string &value) {
+  if (this->parent_ != nullptr) {
+    this->parent_->set_mounting_position_runtime(value);
   }
   this->publish_state(value);
 }
@@ -385,6 +403,23 @@ void FP2Component::loop() {
         ESP_LOGI(TAG, "No saved mode, defaulting to Zone Detection");
       }
       operating_mode_published_ = true;
+    }
+  }
+
+  // Same dance for mounting position. The effective value was already
+  // restored (or defaulted) in setup(); here we just surface it to HA.
+  if (!mounting_position_published_ && mounting_position_select_ != nullptr) {
+    auto *server = api::global_api_server;
+    if (server != nullptr && server->is_connected()) {
+      const char *name;
+      switch (mounting_position_) {
+        case 0x02: name = "Left Corner";  break;
+        case 0x03: name = "Right Corner"; break;
+        default:   name = "Wall";         break;
+      }
+      mounting_position_select_->publish_state(name);
+      ESP_LOGI(TAG, "Published mounting position: %s", name);
+      mounting_position_published_ = true;
     }
   }
 
@@ -2458,6 +2493,45 @@ void FP2Component::ota_transfer_task_entry_(void *arg) {
 // ---------------------------------------------------------------------------
 // Reset / reboot helpers
 // ---------------------------------------------------------------------------
+
+void FP2Component::set_mounting_position_runtime(const std::string &value) {
+  uint8_t code;
+  if      (value == "Wall")         code = 0x01;
+  else if (value == "Left Corner")  code = 0x02;
+  else if (value == "Right Corner") code = 0x03;
+  else {
+    ESP_LOGW(TAG, "Unknown mounting position: %s", value.c_str());
+    return;
+  }
+  if (code == mounting_position_) {
+    ESP_LOGI(TAG, "Mount position unchanged (%s)", value.c_str());
+    return;
+  }
+  ESP_LOGW(TAG, "Mount position: %s (code=%d) — writing to flash, triggering re-init",
+           value.c_str(), code);
+  mounting_position_ = code;
+
+  // Persist first — if the re-init pipeline glitches, the saved value wins on
+  // the next boot and the init sequence re-sends WALL_CORNER_POS with it.
+  mounting_position_pref_.save(&mounting_position_);
+  global_preferences->sync();
+
+  // Update the text diagnostic sensor immediately (if configured) so HA sees
+  // the new value without waiting for the re-init to complete.
+  if (mounting_position_sensor_ != nullptr) {
+    mounting_position_sensor_->publish_state(get_mounting_position_string_());
+  }
+
+  // Send the new position to the radar. Init sequence will send it again,
+  // but sending now is a no-op for the radar if re-init succeeds and insurance
+  // if the reset path glitches.
+  enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
+
+  // Full re-init — reuses the reset-radar path. Clears init_done_, queue, and
+  // ACK state so the next radar heartbeat triggers check_initialization_()
+  // which re-sends grids, zones, and WALL_CORNER_POS under the new orientation.
+  trigger_reset_radar();
+}
 
 void FP2Component::trigger_reset_radar() {
   ESP_LOGW(TAG, "Reset radar: pulsing GPIO13");
