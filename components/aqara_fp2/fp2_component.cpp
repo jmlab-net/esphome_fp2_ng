@@ -70,6 +70,66 @@ void FP2Component::setup() {
     ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d)", saved_mode, sleep_mode_active_);
   }
 
+  // Restore runtime-edited grids from flash. Must run before the init queue
+  // fires (check_initialization_ in loop) so restored values are what get
+  // sent to the radar on boot.
+  edge_pref_ = global_preferences->make_preference<GridMap>(fnv1_hash("fp2_edge_grid"));
+  interference_pref_ = global_preferences->make_preference<GridMap>(fnv1_hash("fp2_interference_grid"));
+  exit_pref_ = global_preferences->make_preference<GridMap>(fnv1_hash("fp2_exit_grid"));
+  {
+    GridMap restored;
+    if (edge_pref_.load(&restored)) {
+      edge_grid_ = restored;
+      has_edge_grid_ = true;
+      ESP_LOGI(TAG, "Restored edge grid from flash");
+    }
+    if (interference_pref_.load(&restored)) {
+      interference_grid_ = restored;
+      has_interference_grid_ = true;
+      ESP_LOGI(TAG, "Restored interference grid from flash");
+    }
+    if (exit_pref_.load(&restored)) {
+      exit_grid_ = restored;
+      has_exit_grid_ = true;
+      ESP_LOGI(TAG, "Restored entry/exit grid from flash");
+    }
+  }
+
+  // Zones — hash-gated. If the YAML-compiled zone set (ids + grids) differs
+  // from what was saved, the user edited YAML and reflashed: we honour the
+  // new defaults and wipe saved runtime edits.
+  {
+    uint32_t compiled_hash = 0x811C9DC5u;  // FNV-1a 32-bit offset basis
+    for (const auto &zone : zones_) {
+      compiled_hash = (compiled_hash ^ zone->id) * 0x01000193u;
+      for (auto b : zone->grid) {
+        compiled_hash = (compiled_hash ^ b) * 0x01000193u;
+      }
+    }
+    zone_defaults_hash_pref_ = global_preferences->make_preference<uint32_t>(fnv1_hash("fp2_zone_defaults_hash"));
+    uint32_t saved_hash = 0;
+    bool hash_match = zone_defaults_hash_pref_.load(&saved_hash) && saved_hash == compiled_hash;
+    if (!hash_match) {
+      ESP_LOGI(TAG, "Zone defaults changed (or first boot) — discarding saved zone grids");
+      zone_defaults_hash_pref_.save(&compiled_hash);
+      global_preferences->sync();
+    }
+    zone_prefs_.clear();
+    zone_prefs_.reserve(zones_.size());
+    for (const auto &zone : zones_) {
+      std::string key = "fp2_zone_grid_" + std::to_string(zone->id);
+      auto pref = global_preferences->make_preference<GridMap>(fnv1_hash(key.c_str()));
+      if (hash_match) {
+        GridMap saved;
+        if (pref.load(&saved)) {
+          zone->grid = saved;
+          ESP_LOGI(TAG, "Restored zone %d grid from flash", zone->id);
+        }
+      }
+      zone_prefs_.push_back(pref);
+    }
+  }
+
   // Look up the radar firmware staging partition by name. Pointer may be
   // null if the partition table doesn't include mcu_ota (e.g. running on a
   // stock ESPHome partition layout that hasn't been re-flashed for this
@@ -279,20 +339,28 @@ void FP2Component::clear_edge_calibration() {
     default_grid[r * 2] = 0x3F;      // cols 2-7: bits 13-8
     default_grid[r * 2 + 1] = 0xFF;  // cols 8-15: all bits
   }
+  edge_grid_ = default_grid;
+  has_edge_grid_ = true;
   enqueue_command_blob2_(AttrId::EDGE_MAP,
-      std::vector<uint8_t>(default_grid.begin(), default_grid.end()));
+      std::vector<uint8_t>(edge_grid_.begin(), edge_grid_.end()));
+  // Persist the cleared state so reboot doesn't resurrect a prior edit.
+  edge_pref_.save(&edge_grid_);
+  global_preferences->sync();
   if (edge_label_grid_sensor_ != nullptr) {
-    edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(default_grid));
+    edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(edge_grid_));
   }
 }
 
 void FP2Component::clear_interference_calibration() {
   ESP_LOGI(TAG, "Clearing interference calibration (sending empty grid)...");
+  interference_grid_.fill(0);
+  has_interference_grid_ = true;
   std::vector<uint8_t> empty_grid(40, 0x00);
   enqueue_command_blob2_(AttrId::INTERFERENCE_MAP, empty_grid);
+  interference_pref_.save(&interference_grid_);
+  global_preferences->sync();
   if (interference_grid_sensor_ != nullptr) {
-    GridMap empty{};
-    interference_grid_sensor_->publish_state(grid_to_hex_card_format(empty));
+    interference_grid_sensor_->publish_state(grid_to_hex_card_format(interference_grid_));
   }
 }
 
@@ -1358,6 +1426,10 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 // Apply to radar
                 enqueue_command_blob2_(AttrId::EDGE_MAP,
                     std::vector<uint8_t>(edge_grid_.begin(), edge_grid_.end()));
+                // Persist so "calibrate then tweak" survives reboot and the
+                // card sees the autoscan result on its next map_config fetch.
+                edge_pref_.save(&edge_grid_);
+                global_preferences->sync();
                 // Update card sensor
                 if (edge_label_grid_sensor_ != nullptr) {
                     edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(edge_grid_));
@@ -1377,6 +1449,8 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 // Apply to radar
                 enqueue_command_blob2_(AttrId::INTERFERENCE_MAP,
                     std::vector<uint8_t>(interference_grid_.begin(), interference_grid_.end()));
+                interference_pref_.save(&interference_grid_);
+                global_preferences->sync();
                 // Update card sensor
                 if (interference_grid_sensor_ != nullptr) {
                     interference_grid_sensor_->publish_state(grid_to_hex_card_format(interference_grid_));
@@ -1689,6 +1763,133 @@ void FP2Component::set_zones(const std::vector<FP2Zone*> &zones) {
     zones_ = zones;
 }
 
+bool FP2Component::decode_card_hex_(const std::string &hex, GridMap &out) {
+  // The card's 56-char hex is the verbatim first 28 bytes of the internal
+  // grid (rows 0-13, 2 bytes each). Rows 14-19 are unused by the card layer
+  // and get zero-filled here; grid_to_hex_card_format() only emits rows 0-13
+  // so round-trip is lossless for anything the card can produce.
+  if (hex.size() != 56) {
+    return false;
+  }
+  auto nibble = [](char c) -> int {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+  };
+  out.fill(0);
+  for (size_t i = 0; i < 28; i++) {
+    int hi = nibble(hex[i * 2]);
+    int lo = nibble(hex[i * 2 + 1]);
+    if (hi < 0 || lo < 0) {
+      return false;
+    }
+    out[i] = static_cast<uint8_t>((hi << 4) | lo);
+  }
+  return true;
+}
+
+void FP2Component::api_set_edge_grid(std::string hex, JsonObject root) {
+  ESP_LOGI(TAG, "api_set_edge_grid: hex=%s", hex.c_str());
+  GridMap grid;
+  if (!decode_card_hex_(hex, grid)) {
+    root["ok"] = false;
+    root["error"] = "invalid grid_hex (expected 56 hex chars)";
+    return;
+  }
+  edge_grid_ = grid;
+  has_edge_grid_ = true;
+  enqueue_command_blob2_(AttrId::EDGE_MAP,
+      std::vector<uint8_t>(edge_grid_.begin(), edge_grid_.end()));
+  edge_pref_.save(&edge_grid_);
+  global_preferences->sync();
+  ESP_LOGI(TAG, "Saved edge grid to flash");
+  if (edge_label_grid_sensor_ != nullptr) {
+    edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(edge_grid_));
+  }
+  root["ok"] = true;
+}
+
+void FP2Component::api_set_interference_grid(std::string hex, JsonObject root) {
+  ESP_LOGI(TAG, "api_set_interference_grid: hex=%s", hex.c_str());
+  GridMap grid;
+  if (!decode_card_hex_(hex, grid)) {
+    root["ok"] = false;
+    root["error"] = "invalid grid_hex (expected 56 hex chars)";
+    return;
+  }
+  interference_grid_ = grid;
+  has_interference_grid_ = true;
+  enqueue_command_blob2_(AttrId::INTERFERENCE_MAP,
+      std::vector<uint8_t>(interference_grid_.begin(), interference_grid_.end()));
+  interference_pref_.save(&interference_grid_);
+  global_preferences->sync();
+  ESP_LOGI(TAG, "Saved interference grid to flash");
+  if (interference_grid_sensor_ != nullptr) {
+    interference_grid_sensor_->publish_state(grid_to_hex_card_format(interference_grid_));
+  }
+  root["ok"] = true;
+}
+
+void FP2Component::api_set_entry_exit_grid(std::string hex, JsonObject root) {
+  ESP_LOGI(TAG, "api_set_entry_exit_grid: hex=%s", hex.c_str());
+  GridMap grid;
+  if (!decode_card_hex_(hex, grid)) {
+    root["ok"] = false;
+    root["error"] = "invalid grid_hex (expected 56 hex chars)";
+    return;
+  }
+  exit_grid_ = grid;
+  has_exit_grid_ = true;
+  enqueue_command_blob2_(AttrId::ENTRY_EXIT_MAP,
+      std::vector<uint8_t>(exit_grid_.begin(), exit_grid_.end()));
+  exit_pref_.save(&exit_grid_);
+  global_preferences->sync();
+  ESP_LOGI(TAG, "Saved entry/exit grid to flash");
+  if (entry_exit_grid_sensor_ != nullptr) {
+    entry_exit_grid_sensor_->publish_state(grid_to_hex_card_format(exit_grid_));
+  }
+  root["ok"] = true;
+}
+
+void FP2Component::api_set_zone_grid(int zone_id, std::string hex, JsonObject root) {
+  ESP_LOGI(TAG, "api_set_zone_grid: id=%d hex=%s", zone_id, hex.c_str());
+  GridMap grid;
+  if (!decode_card_hex_(hex, grid)) {
+    root["ok"] = false;
+    root["error"] = "invalid grid_hex (expected 56 hex chars)";
+    return;
+  }
+  FP2Zone *target = nullptr;
+  size_t zone_idx = 0;
+  for (size_t i = 0; i < zones_.size(); i++) {
+    if (zones_[i]->id == static_cast<uint8_t>(zone_id)) {
+      target = zones_[i];
+      zone_idx = i;
+      break;
+    }
+  }
+  if (target == nullptr) {
+    root["ok"] = false;
+    root["error"] = "zone_id not found";
+    return;
+  }
+  target->grid = grid;
+  std::vector<uint8_t> payload;
+  payload.push_back(target->id);
+  payload.insert(payload.end(), target->grid.begin(), target->grid.end());
+  enqueue_command_blob2_(AttrId::ZONE_MAP, payload);
+  if (zone_idx < zone_prefs_.size()) {
+    zone_prefs_[zone_idx].save(&target->grid);
+    global_preferences->sync();
+    ESP_LOGI(TAG, "Saved zone %d grid to flash", zone_id);
+  }
+  if (target->map_sensor != nullptr) {
+    target->map_sensor->publish_state(grid_to_hex_card_format(target->grid));
+  }
+  root["ok"] = true;
+}
+
 std::string FP2Component::grid_to_hex_card_format(const GridMap &grid) {
   std::string result;
   result.reserve(56);  // 14 rows * 2 bytes * 2 hex chars
@@ -1778,6 +1979,7 @@ void FP2Component::json_get_map_data(JsonObject root) {
     JsonArray zones_array = root["zones"].to<JsonArray>();
     for (FP2Zone *zone : zones_) {
       JsonObject zone_obj = zones_array.add<JsonObject>();
+      zone_obj["id"] = zone->id;
       zone_obj["sensitivity"] = zone->sensitivity;
       zone_obj["grid"] = grid_to_hex_card_format(zone->grid);
       if (zone->presence_sensor != nullptr) {

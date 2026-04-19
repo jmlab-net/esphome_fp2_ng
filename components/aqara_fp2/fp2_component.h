@@ -542,7 +542,18 @@ public:
   JsonDocument get_map_config_json();
   void json_get_map_data(JsonObject root);
 
+  // Runtime grid editing — called from user YAML via api.actions.
+  // Each takes the 56-char hex produced by grid_to_hex_card_format() and
+  // writes {ok: bool, error?: string} into the response root.
+  void api_set_edge_grid(std::string hex, JsonObject root);
+  void api_set_interference_grid(std::string hex, JsonObject root);
+  void api_set_entry_exit_grid(std::string hex, JsonObject root);
+  void api_set_zone_grid(int zone_id, std::string hex, JsonObject root);
+
 protected:
+  // Parse 56 card-format hex chars into the internal 40-byte GridMap
+  // (rows 0-13 * 2 bytes = 28 bytes of data, rows 14-19 zero-filled).
+  bool decode_card_hex_(const std::string &hex, GridMap &out);
   // Internal logic
   void process_command_queue_();
   void send_next_command_();
@@ -610,6 +621,15 @@ protected:
   bool sleep_mode_active_{false};
   ESPPreferenceObject operating_mode_pref_;
   bool operating_mode_published_{false};
+
+  // Runtime-edited grid persistence. Keys are stable across YAML/firmware
+  // rebuilds (layer identity only), so hand-painted grids survive reflashes
+  // of unrelated code. Zone prefs are additionally gated by
+  // zone_defaults_hash_pref_: if the user changes a zone's grid in YAML and
+  // reflashes, saved runtime edits for that set of zones are discarded.
+  ESPPreferenceObject edge_pref_, interference_pref_, exit_pref_;
+  std::vector<ESPPreferenceObject> zone_prefs_;
+  ESPPreferenceObject zone_defaults_hash_pref_;
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   FP2ClearEdgeButton *clear_edge_button_{nullptr};

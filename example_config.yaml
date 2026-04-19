@@ -38,6 +38,46 @@ api:
             data: !lambda |-
               id(fp2).json_get_map_data(root);
 
+    # Runtime grid editing — called from the Lovelace card to paint grids
+    # at runtime. Each takes the 56-char hex produced by get_map_config and
+    # returns {ok: bool, error?: string}. Edits persist to ESP flash.
+    - action: set_edge_grid
+      variables:
+        grid_hex: string
+      supports_response: only
+      then:
+        - api.respond:
+            data: !lambda |-
+              id(fp2).api_set_edge_grid(grid_hex, root);
+
+    - action: set_interference_grid
+      variables:
+        grid_hex: string
+      supports_response: only
+      then:
+        - api.respond:
+            data: !lambda |-
+              id(fp2).api_set_interference_grid(grid_hex, root);
+
+    - action: set_entry_exit_grid
+      variables:
+        grid_hex: string
+      supports_response: only
+      then:
+        - api.respond:
+            data: !lambda |-
+              id(fp2).api_set_entry_exit_grid(grid_hex, root);
+
+    - action: set_zone_grid
+      variables:
+        zone_id: int
+        grid_hex: string
+      supports_response: only
+      then:
+        - api.respond:
+            data: !lambda |-
+              id(fp2).api_set_zone_grid(zone_id, grid_hex, root);
+
 ota:
   - platform: esphome
     password: !secret ota_password
