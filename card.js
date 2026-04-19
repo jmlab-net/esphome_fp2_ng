@@ -98,8 +98,33 @@ class AqaraFP2Card extends HTMLElement {
     if (!this._hass || !this.canvas) return;
     const data = this.gatherEntityData();
     this.updateLiveViewButton();
+    this.updateCalibrationBanner();
     this.renderCanvas(data);
     this.updateInfoPanel(data);
+  }
+
+  // Show the orange "Calibrating…" banner while either calibration binary
+  // sensor is on. Hidden otherwise (or if the sensors aren't configured,
+  // which is opt-in via YAML).
+  updateCalibrationBanner() {
+    const banner = this.querySelector('.fp2-calibration-banner');
+    if (!banner || !this._hass) return;
+    const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+    const edge = this._hass.states[`binary_sensor.${deviceName}_calibrating_edge`];
+    const intf = this._hass.states[`binary_sensor.${deviceName}_calibrating_interference`];
+    const edgeOn = edge && edge.state === 'on';
+    const intfOn = intf && intf.state === 'on';
+    if (!edgeOn && !intfOn) {
+      banner.hidden = true;
+      return;
+    }
+    banner.hidden = false;
+    const label = banner.querySelector('.fp2-calibration-text');
+    if (label) {
+      if (edgeOn && intfOn) label.textContent = 'Calibrating edge + interference…';
+      else if (edgeOn)      label.textContent = 'Calibrating room boundaries…';
+      else                  label.textContent = 'Calibrating interference…';
+    }
   }
 
   setConfig(config) {
@@ -161,6 +186,10 @@ class AqaraFP2Card extends HTMLElement {
               <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
             </button>
           </div>
+        </div>
+        <div class="fp2-calibration-banner" hidden>
+          <span class="fp2-spinner"></span>
+          <span class="fp2-calibration-text">Calibrating…</span>
         </div>
         <div class="fp2-edit-toolbar" hidden>
           <select class="fp2-layer-select" title="Layer to edit">
@@ -266,6 +295,30 @@ class AqaraFP2Card extends HTMLElement {
         .fp2-info .fp2-dot.target { background: #FF9800; }
         .fp2-info .fp2-dot.zone-on { background: #42A5F5; }
         .fp2-info .fp2-dot.zone-off { background: rgba(66,165,245,0.3); }
+
+        /* --- Calibration banner --- */
+        .fp2-calibration-banner {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 12px;
+          margin-bottom: 8px;
+          background: rgba(255,152,0,0.15);
+          border: 1px solid rgba(255,152,0,0.5);
+          border-radius: 8px;
+          color: var(--primary-text-color);
+          font-size: 13px;
+        }
+        .fp2-calibration-banner[hidden] { display: none; }
+        .fp2-spinner {
+          width: 14px;
+          height: 14px;
+          border: 2px solid rgba(255,152,0,0.3);
+          border-top-color: rgba(255,152,0,1);
+          border-radius: 50%;
+          animation: fp2-spin 0.8s linear infinite;
+        }
+        @keyframes fp2-spin { to { transform: rotate(360deg); } }
 
         /* --- Edit mode toolbar --- */
         .fp2-edit-toolbar {

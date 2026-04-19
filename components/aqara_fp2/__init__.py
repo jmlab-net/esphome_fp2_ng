@@ -97,6 +97,8 @@ CONF_FALL_DETECTION = "fall_detection"
 CONF_FALL_OVERTIME = "fall_overtime"
 CONF_FALL_OVERTIME_PERIOD = "fall_overtime_period"
 CONF_DELETE_FALSE_TARGETS = "delete_false_targets"
+CONF_CALIBRATING_EDGE = "calibrating_edge"
+CONF_CALIBRATING_INTERFERENCE = "calibrating_interference"
 CONF_SLEEP_MOUNT_POSITION = "sleep_mount_position"
 CONF_SLEEP_ZONE_SIZE = "sleep_zone_size"
 CONF_SLEEP_BED_HEIGHT = "sleep_bed_height"
@@ -285,6 +287,14 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_FALL_OVERTIME): binary_sensor.binary_sensor_schema(
                 icon="mdi:alert-octagon",
             ),
+            cv.Optional(CONF_CALIBRATING_EDGE): binary_sensor.binary_sensor_schema(
+                icon="mdi:border-all-variant",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
+            cv.Optional(CONF_CALIBRATING_INTERFERENCE): binary_sensor.binary_sensor_schema(
+                icon="mdi:waves",
+                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            ),
             cv.Optional(CONF_FALL_OVERTIME_PERIOD): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_DWELL_TIME_ENABLE): cv.boolean,
             cv.Optional(CONF_SLEEP_MOUNT_POSITION): cv.int_range(min=0, max=3),
@@ -408,6 +418,8 @@ SENSOR_MAP = {
     CONF_CLEAR_INTERFERENCE: (button.new_button, "set_clear_interference_button"),
     CONF_DELETE_FALSE_TARGETS: (button.new_button, "set_delete_false_targets_button"),
     CONF_FALL_OVERTIME: (binary_sensor.new_binary_sensor, "set_fall_overtime_sensor"),
+    CONF_CALIBRATING_EDGE: (binary_sensor.new_binary_sensor, "set_calibrating_edge_sensor"),
+    CONF_CALIBRATING_INTERFERENCE: (binary_sensor.new_binary_sensor, "set_calibrating_interference_sensor"),
     CONF_RADAR_OTA: (button.new_button, "set_radar_ota_button"),
     CONF_RADAR_FW_STAGE: (button.new_button, "set_radar_fw_stage_button"),
     CONF_RADAR_OTA_PROBE: (button.new_button, "set_radar_ota_probe_button"),

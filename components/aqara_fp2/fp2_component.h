@@ -515,6 +515,12 @@ public:
   void set_radar_state_sensor(text_sensor::TextSensor *sensor) {
       radar_state_sensor_ = sensor;
   }
+  void set_calibrating_edge_sensor(binary_sensor::BinarySensor *sensor) {
+      calibrating_edge_sensor_ = sensor;
+  }
+  void set_calibrating_interference_sensor(binary_sensor::BinarySensor *sensor) {
+      calibrating_interference_sensor_ = sensor;
+  }
   void set_radar_temperature_sensor(sensor::Sensor *sensor) {
       radar_temperature_sensor_ = sensor;
   }
@@ -692,6 +698,16 @@ protected:
   text_sensor::TextSensor *mounting_position_sensor_{nullptr};
 
   text_sensor::TextSensor *radar_state_sensor_{nullptr};
+  binary_sensor::BinarySensor *calibrating_edge_sensor_{nullptr};
+  binary_sensor::BinarySensor *calibrating_interference_sensor_{nullptr};
+
+  // Calibration watchdog — non-zero = start millis of an active auto-scan.
+  // Cleared when the radar replies with *_AUTO_SET, or after the timeout
+  // elapses (in which case we log + publish false to unstick HA).
+  uint32_t edge_calibration_start_ms_{0};
+  uint32_t interference_calibration_start_ms_{0};
+  static const uint32_t CALIBRATION_TIMEOUT_MS = 60000;
+
   sensor::Sensor *radar_temperature_sensor_{nullptr};
   sensor::Sensor *people_count_sensor_{nullptr};
   text_sensor::TextSensor *radar_software_sensor_{nullptr};

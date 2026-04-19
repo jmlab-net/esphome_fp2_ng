@@ -311,11 +311,17 @@ void FP2Component::set_operating_mode(const std::string &mode) {
 
 void FP2Component::trigger_edge_calibration() {
   ESP_LOGI(TAG, "Starting edge auto-calibration...");
+  edge_calibration_start_ms_ = millis();
+  if (edge_calibration_start_ms_ == 0) edge_calibration_start_ms_ = 1;  // 0 reserved
+  if (calibrating_edge_sensor_ != nullptr) calibrating_edge_sensor_->publish_state(true);
   enqueue_command_(OpCode::WRITE, AttrId::EDGE_AUTO_ENABLE, true);
 }
 
 void FP2Component::trigger_interference_calibration() {
   ESP_LOGI(TAG, "Starting interference auto-calibration...");
+  interference_calibration_start_ms_ = millis();
+  if (interference_calibration_start_ms_ == 0) interference_calibration_start_ms_ = 1;
+  if (calibrating_interference_sensor_ != nullptr) calibrating_interference_sensor_->publish_state(true);
   enqueue_command_(OpCode::WRITE, AttrId::INTERFERENCE_AUTO_ENABLE, true);
 }
 
@@ -420,6 +426,27 @@ void FP2Component::loop() {
       mounting_position_select_->publish_state(name);
       ESP_LOGI(TAG, "Published mounting position: %s", name);
       mounting_position_published_ = true;
+    }
+  }
+
+  // Calibration watchdog — if the radar never replies with *_AUTO_SET,
+  // auto-clear the indicator after CALIBRATION_TIMEOUT_MS so HA doesn't
+  // show "calibrating" forever.
+  {
+    const uint32_t now = millis();
+    if (edge_calibration_start_ms_ != 0 &&
+        (now - edge_calibration_start_ms_) > CALIBRATION_TIMEOUT_MS) {
+      ESP_LOGW(TAG, "Edge calibration timed out after %u ms — no EDGE_AUTO_SET received",
+               (unsigned)(now - edge_calibration_start_ms_));
+      edge_calibration_start_ms_ = 0;
+      if (calibrating_edge_sensor_ != nullptr) calibrating_edge_sensor_->publish_state(false);
+    }
+    if (interference_calibration_start_ms_ != 0 &&
+        (now - interference_calibration_start_ms_) > CALIBRATION_TIMEOUT_MS) {
+      ESP_LOGW(TAG, "Interference calibration timed out after %u ms",
+               (unsigned)(now - interference_calibration_start_ms_));
+      interference_calibration_start_ms_ = 0;
+      if (calibrating_interference_sensor_ != nullptr) calibrating_interference_sensor_->publish_state(false);
     }
   }
 
@@ -1469,6 +1496,9 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (edge_label_grid_sensor_ != nullptr) {
                     edge_label_grid_sensor_->publish_state(grid_to_hex_card_format(edge_grid_));
                 }
+                // Calibration complete — clear watchdog + HA indicator
+                edge_calibration_start_ms_ = 0;
+                if (calibrating_edge_sensor_ != nullptr) calibrating_edge_sensor_->publish_state(false);
             }
         }
         break;
@@ -1490,6 +1520,8 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (interference_grid_sensor_ != nullptr) {
                     interference_grid_sensor_->publish_state(grid_to_hex_card_format(interference_grid_));
                 }
+                interference_calibration_start_ms_ = 0;
+                if (calibrating_interference_sensor_ != nullptr) calibrating_interference_sensor_->publish_state(false);
             }
         }
         break;
