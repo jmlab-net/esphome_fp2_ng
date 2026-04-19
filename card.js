@@ -21,6 +21,16 @@ class AqaraFP2Card extends HTMLElement {
     this.gridSize = 14;
     this._lastRender = 0;
     this._pendingUpdate = null;
+
+    // --- Edit mode state ---
+    // editMode: null (read-only) | 'edge' | 'interference' | 'entry_exit' | {type:'zone', id:N}
+    this.editMode = null;
+    this.pendingGrid = null;     // 14x14 0/1 array; current working copy while editing
+    this._originalGrid = null;   // snapshot taken at edit start, for dirty check + cancel
+    this.painting = false;       // true while pointer is down and dragging
+    this.paintMode = 'paint';    // 'paint' | 'erase' — locked on pointerdown from initial cell value
+    this._paintedCells = null;   // Set of "x,y" strings visited in current drag
+    this._applyInFlight = false;
   }
 
   set hass(hass) {
@@ -103,10 +113,28 @@ class AqaraFP2Card extends HTMLElement {
         <div class="fp2-header">
           <div class="fp2-title">${this.config.title || "Aqara FP2"}</div>
           <div class="fp2-controls">
+            <button class="fp2-btn edit-toggle" title="Edit grids">
+              <ha-icon icon="mdi:pencil"></ha-icon>
+            </button>
             <button class="fp2-btn live-view-toggle" title="Toggle Live Tracking">
               <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
             </button>
           </div>
+        </div>
+        <div class="fp2-edit-toolbar" hidden>
+          <select class="fp2-layer-select" title="Layer to edit">
+            <option value="edge">Edge / Boundary</option>
+            <option value="interference">Interference</option>
+            <option value="entry_exit">Entry / Exit</option>
+          </select>
+          <button class="fp2-btn fp2-apply-btn" title="Write grid to device">
+            <ha-icon icon="mdi:content-save"></ha-icon> Apply
+          </button>
+          <button class="fp2-btn fp2-cancel-btn" title="Discard pending edits">
+            <ha-icon icon="mdi:close"></ha-icon> Cancel
+          </button>
+          <span class="fp2-dirty-dot" title="Unsaved edits"></span>
+          <span class="fp2-edit-hint">click &amp; drag to paint / erase</span>
         </div>
         <div class="fp2-content">
           <canvas id="fp2-canvas"></canvas>
@@ -197,6 +225,59 @@ class AqaraFP2Card extends HTMLElement {
         .fp2-info .fp2-dot.target { background: #FF9800; }
         .fp2-info .fp2-dot.zone-on { background: #42A5F5; }
         .fp2-info .fp2-dot.zone-off { background: rgba(66,165,245,0.3); }
+
+        /* --- Edit mode toolbar --- */
+        .fp2-edit-toolbar {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+          padding: 8px 6px;
+          margin-bottom: 8px;
+          background: var(--secondary-background-color);
+          border: 1px solid var(--divider-color);
+          border-radius: 8px;
+        }
+        .fp2-edit-toolbar[hidden] { display: none; }
+        .fp2-edit-toolbar .fp2-layer-select {
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          border: 1px solid var(--divider-color);
+          border-radius: 6px;
+          padding: 4px 8px;
+          font-size: 13px;
+        }
+        .fp2-edit-toolbar .fp2-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 13px;
+        }
+        .fp2-edit-toolbar .fp2-btn[disabled] {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+        .fp2-dirty-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: #FF9800;
+          visibility: hidden;
+        }
+        .fp2-dirty-dot.active { visibility: visible; }
+        .fp2-edit-hint {
+          font-size: 12px;
+          color: var(--secondary-text-color);
+          margin-left: auto;
+        }
+        /* Canvas flash feedback on apply */
+        #fp2-canvas {
+          transition: box-shadow 0.2s ease;
+        }
+        #fp2-canvas.flash-ok   { box-shadow: 0 0 0 3px rgba(76,175,80,0.85); }
+        #fp2-canvas.flash-err  { box-shadow: 0 0 0 3px rgba(244,67,54,0.85); }
+        /* Crosshair cursor while editing */
+        .fp2-editing #fp2-canvas { cursor: crosshair; touch-action: none; }
       </style>
     `;
 
@@ -206,7 +287,21 @@ class AqaraFP2Card extends HTMLElement {
     this.infoPanel = this.querySelector(".fp2-info");
 
     this.querySelector(".live-view-toggle").addEventListener("click", () => this.toggleLiveView());
-    this.canvas.addEventListener("click", (e) => this.handleCanvasClick(e));
+
+    // Edit-mode controls
+    this.querySelector(".edit-toggle").addEventListener("click", () => this.toggleEditMode());
+    this.querySelector(".fp2-apply-btn").addEventListener("click", () => this.applyPendingGrid());
+    this.querySelector(".fp2-cancel-btn").addEventListener("click", () => this.cancelEdit());
+    this.querySelector(".fp2-layer-select").addEventListener("change", (e) => this.setEditLayer(e.target.value));
+
+    // Pointer-driven paint/erase. Pointer events cover mouse + touch + pen with
+    // a single API; pointerdown also fires a click afterwards, so nothing here
+    // breaks the previous read-only click path (which did nothing anyway).
+    this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+    this.canvas.addEventListener("pointermove", (e) => this.handlePointerMove(e));
+    this.canvas.addEventListener("pointerup",   () => this.handlePointerUp());
+    this.canvas.addEventListener("pointercancel",() => this.handlePointerUp());
+    this.canvas.addEventListener("pointerleave",() => this.handlePointerUp());
 
     this.resizeObserver = new ResizeObserver(() => this._doUpdate());
     this.resizeObserver.observe(this.content);
@@ -302,6 +397,9 @@ class AqaraFP2Card extends HTMLElement {
         }
         zones.push({
           id: zc.presence_sensor || `zone_${i}`,
+          // Radar-level numeric zone id (what api_set_zone_grid expects). Fall
+          // back to i+1 for firmware predating the id field in get_map_config.
+          _rawId: typeof zc.id === 'number' ? zc.id : (i + 1),
           name: zc.name || (zc.presence_sensor || `Zone ${i+1}`).replace(/^.*_/, '').replace(/_/g, ' '),
           map: parseGrid(zc.grid),
           occupancy,
@@ -313,7 +411,7 @@ class AqaraFP2Card extends HTMLElement {
     const globalPresence = getState(`binary_sensor.${deviceName}_global_presence`);
     const totalPeople = getState(`${prefix}_total_people`);
 
-    return {
+    const result = {
       edgeLabelGrid: parseGrid(mapConfig.edge_grid),
       entryExitGrid: parseGrid(mapConfig.exit_grid),
       interferenceGrid: parseGrid(mapConfig.interference_grid),
@@ -323,6 +421,19 @@ class AqaraFP2Card extends HTMLElement {
       globalPresence: globalPresence === "on",
       totalPeople: totalPeople ? parseFloat(totalPeople) : 0,
     };
+
+    // If we're editing a layer, overlay the working copy so the renderer
+    // draws what the user is painting, not the last-committed state.
+    if (this.editMode && this.pendingGrid) {
+      if (this.editMode === 'edge')         result.edgeLabelGrid    = this.pendingGrid;
+      else if (this.editMode === 'interference') result.interferenceGrid = this.pendingGrid;
+      else if (this.editMode === 'entry_exit')   result.entryExitGrid    = this.pendingGrid;
+      else if (this.editMode.type === 'zone') {
+        const z = result.zones.find(z => z._rawId === this.editMode.id);
+        if (z) z.map = this.pendingGrid;
+      }
+    }
+    return result;
   }
 
   renderCanvas(data) {
@@ -664,13 +775,230 @@ class AqaraFP2Card extends HTMLElement {
     this.infoPanel.innerHTML = html;
   }
 
-  handleCanvasClick(e) {
-    if (!this.renderParams) return;
+  // --- Edit mode: toolbar / state helpers -----------------------------------
+
+  // Called when the pencil button is clicked — toggles into/out of editing.
+  // Defaults to 'edge' on first entry; on subsequent entries, returns to the
+  // most recently edited layer if one exists.
+  toggleEditMode() {
+    if (this.editMode) return this.cancelEdit();
+    this._rebuildLayerOptions();
+    const initialLayer = this._lastEditLayer || 'edge';
+    this._enterEditLayer(initialLayer);
+  }
+
+  // Rebuild the <select> contents to include current zones. Called whenever
+  // edit mode is opened (zones may appear/disappear between compiles).
+  _rebuildLayerOptions() {
+    const sel = this.querySelector('.fp2-layer-select');
+    if (!sel) return;
+    const zones = (this.mapConfig && this.mapConfig.zones) || [];
+    const entryCount = 3 + zones.length;
+    if (sel.options.length === entryCount) return;   // nothing changed
+    while (sel.options.length > 3) sel.remove(3);
+    zones.forEach((z, i) => {
+      const id = typeof z.id === 'number' ? z.id : (i + 1);
+      const label = `Zone ${id}${z.presence_sensor ? ` (${z.presence_sensor})` : ''}`;
+      const opt = document.createElement('option');
+      opt.value = `zone:${id}`;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    });
+  }
+
+  setEditLayer(value) {
+    if (this._isDirty()) {
+      if (!confirm('Discard unsaved edits on current layer?')) {
+        // Re-sync the select back to the active layer
+        this._syncLayerSelect();
+        return;
+      }
+    }
+    this._enterEditLayer(value);
+  }
+
+  _enterEditLayer(value) {
+    // Parse value — 'edge' | 'interference' | 'entry_exit' | 'zone:<id>'
+    let mode;
+    if (value.startsWith('zone:')) mode = { type: 'zone', id: parseInt(value.slice(5), 10) };
+    else mode = value;
+
+    // Take a fresh snapshot of the layer's *committed* state (no overlay).
+    const prevEdit = this.editMode;
+    this.editMode = null;
+    const data = this.gatherEntityData();
+    this.editMode = mode;
+    this._lastEditLayer = value;
+
+    let src;
+    if (mode === 'edge')                src = data.edgeLabelGrid;
+    else if (mode === 'interference')   src = data.interferenceGrid;
+    else if (mode === 'entry_exit')     src = data.entryExitGrid;
+    else if (mode.type === 'zone') {
+      const z = data.zones.find(z => z._rawId === mode.id);
+      src = z ? z.map : Array(14).fill(null).map(() => Array(14).fill(0));
+    }
+    this._originalGrid = src.map(row => [...row]);
+    this.pendingGrid   = src.map(row => [...row]);
+    this._paintedCells = null;
+    this.painting = false;
+    this._updateEditToolbar();
+    this.classList.add('fp2-editing');
+    this._doUpdate();
+  }
+
+  cancelEdit() {
+    this.editMode = null;
+    this.pendingGrid = null;
+    this._originalGrid = null;
+    this.painting = false;
+    this._paintedCells = null;
+    this._updateEditToolbar();
+    this.classList.remove('fp2-editing');
+    this._doUpdate();
+  }
+
+  _syncLayerSelect() {
+    const sel = this.querySelector('.fp2-layer-select');
+    if (!sel || !this.editMode) return;
+    if (typeof this.editMode === 'string') sel.value = this.editMode;
+    else if (this.editMode.type === 'zone') sel.value = `zone:${this.editMode.id}`;
+  }
+
+  _updateEditToolbar() {
+    const toolbar = this.querySelector('.fp2-edit-toolbar');
+    const editBtn = this.querySelector('.edit-toggle');
+    const dirtyDot = this.querySelector('.fp2-dirty-dot');
+    const applyBtn = this.querySelector('.fp2-apply-btn');
+    if (toolbar) toolbar.hidden = !this.editMode;
+    if (editBtn) editBtn.classList.toggle('active', !!this.editMode);
+    if (dirtyDot) dirtyDot.classList.toggle('active', this._isDirty());
+    if (applyBtn) {
+      applyBtn.disabled = !this._isDirty() || this._applyInFlight;
+    }
+    this._syncLayerSelect();
+  }
+
+  _isDirty() {
+    if (!this.pendingGrid || !this._originalGrid) return false;
+    for (let y = 0; y < 14; y++) {
+      for (let x = 0; x < 14; x++) {
+        if (this.pendingGrid[y][x] !== this._originalGrid[y][x]) return true;
+      }
+    }
+    return false;
+  }
+
+  // --- Edit mode: pointer handlers -----------------------------------------
+
+  _pointerToCell(e) {
+    if (!this.renderParams) return null;
     const rect = this.canvas.getBoundingClientRect();
-    const { minX, minY, cellSize } = this.renderParams;
-    const gridX = Math.floor((e.clientX - rect.left) / cellSize) + minX;
-    const gridY = Math.floor((e.clientY - rect.top) / cellSize) + minY;
-    // Could show cell details in a popup
+    const { minX, maxX, minY, maxY, cellSize } = this.renderParams;
+    const x = Math.floor((e.clientX - rect.left) / cellSize) + minX;
+    const y = Math.floor((e.clientY - rect.top) / cellSize) + minY;
+    if (x < 0 || x > 13 || y < 0 || y > 13) return null;
+    if (x < minX || x > maxX || y < minY || y > maxY) return null;
+    return { x, y };
+  }
+
+  handlePointerDown(e) {
+    if (!this.editMode || !this.pendingGrid) return;
+    const cell = this._pointerToCell(e);
+    if (!cell) return;
+    e.preventDefault();
+    try { this.canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    const prev = this.pendingGrid[cell.y][cell.x];
+    this.paintMode = prev ? 'erase' : 'paint';
+    this.painting = true;
+    this._paintedCells = new Set([`${cell.x},${cell.y}`]);
+    this.pendingGrid[cell.y][cell.x] = prev ? 0 : 1;
+    this._updateEditToolbar();
+    this._doUpdate();
+  }
+
+  handlePointerMove(e) {
+    if (!this.painting || !this.pendingGrid) return;
+    const cell = this._pointerToCell(e);
+    if (!cell) return;
+    const key = `${cell.x},${cell.y}`;
+    if (this._paintedCells.has(key)) return;
+    this._paintedCells.add(key);
+    this.pendingGrid[cell.y][cell.x] = this.paintMode === 'paint' ? 1 : 0;
+    this._updateEditToolbar();
+    this._doUpdate();
+  }
+
+  handlePointerUp() {
+    if (!this.painting) return;
+    this.painting = false;
+    this._paintedCells = null;
+  }
+
+  // --- Edit mode: apply / cancel -------------------------------------------
+
+  async applyPendingGrid() {
+    if (!this.editMode || !this.pendingGrid) return;
+    if (!this._isDirty() || this._applyInFlight) return;
+    this._applyInFlight = true;
+    this._updateEditToolbar();
+
+    const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+    const hex = this._gridTo56Hex(this.pendingGrid);
+    let service, data;
+    if (this.editMode === 'edge')              { service = `${deviceName}_set_edge_grid`;         data = { grid_hex: hex }; }
+    else if (this.editMode === 'interference') { service = `${deviceName}_set_interference_grid`; data = { grid_hex: hex }; }
+    else if (this.editMode === 'entry_exit')   { service = `${deviceName}_set_entry_exit_grid`;   data = { grid_hex: hex }; }
+    else if (this.editMode.type === 'zone')    { service = `${deviceName}_set_zone_grid`;         data = { zone_id: this.editMode.id, grid_hex: hex }; }
+    else { this._applyInFlight = false; this._updateEditToolbar(); return; }
+
+    try {
+      const resp = await this._hass.callService('esphome', service, data, undefined, undefined, true);
+      const ok = resp && resp.response && resp.response.ok === true;
+      if (ok) {
+        this._flashCanvas('ok');
+        // Refetch to pick up authoritative state (handles any server-side shaping)
+        await this.fetchMapConfig();
+        // New baseline = what the device now reports (or our pending if refetch
+        // raced and editMode still set)
+        this._originalGrid = this.pendingGrid.map(row => [...row]);
+      } else {
+        this._flashCanvas('err');
+        const err = resp && resp.response && resp.response.error;
+        console.error('[FP2 Card] set_grid rejected:', err || resp);
+      }
+    } catch (e) {
+      this._flashCanvas('err');
+      console.error('[FP2 Card] Apply failed:', e);
+    } finally {
+      this._applyInFlight = false;
+      this._updateEditToolbar();
+    }
+  }
+
+  _flashCanvas(kind) {
+    if (!this.canvas) return;
+    this.canvas.classList.remove('flash-ok', 'flash-err');
+    // Force reflow to restart the transition
+    void this.canvas.offsetWidth;
+    this.canvas.classList.add(kind === 'ok' ? 'flash-ok' : 'flash-err');
+    setTimeout(() => {
+      this.canvas && this.canvas.classList.remove('flash-ok', 'flash-err');
+    }, 500);
+  }
+
+  // 14x14 grid of 0/1 → 56-char hex matching grid_to_hex_card_format in C++.
+  // Each row is 4 hex chars of a 16-bit value; col c = bit (13 - c).
+  _gridTo56Hex(grid) {
+    let out = '';
+    for (let y = 0; y < 14; y++) {
+      let rowBits = 0;
+      for (let x = 0; x < 14; x++) {
+        if (grid[y][x]) rowBits |= (1 << (13 - x));
+      }
+      out += rowBits.toString(16).padStart(4, '0');
+    }
+    return out;
   }
 
   disconnectedCallback() {
