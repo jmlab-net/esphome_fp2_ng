@@ -98,33 +98,60 @@ class AqaraFP2Card extends HTMLElement {
     if (!this._hass || !this.canvas) return;
     const data = this.gatherEntityData();
     this.updateLiveViewButton();
-    this.updateCalibrationBanner();
+    this.updateStatusBanner();
     this.renderCanvas(data);
     this.updateInfoPanel(data);
   }
 
-  // Show the orange "Calibrating…" banner while either calibration binary
-  // sensor is on. Hidden otherwise (or if the sensors aren't configured,
-  // which is opt-in via YAML).
-  updateCalibrationBanner() {
-    const banner = this.querySelector('.fp2-calibration-banner');
+  // Prioritised status banner. Only the most urgent state is shown:
+  //   1. ESP offline / rebooting  (red)    — radar_state missing/unavailable
+  //   2. Radar initializing       (blue)   — radar_state in {Booting, Init sent, Re-init}
+  //   3. Calibrating              (orange) — either calibrating_* binary sensor on
+  //   4. nothing                  (hidden)
+  // All driven off entity state — no backend changes required.
+  updateStatusBanner() {
+    const banner = this.querySelector('.fp2-status-banner');
     if (!banner || !this._hass) return;
+    const label = banner.querySelector('.fp2-status-text');
     const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+    const radarState = this._hass.states[`sensor.${deviceName}_radar_state`];
+    const rs = radarState ? radarState.state : null;
+
+    const setBanner = (variant, text) => {
+      banner.hidden = false;
+      banner.className = `fp2-status-banner ${variant}`;
+      if (label) label.textContent = text;
+    };
+
+    // 1. Offline / rebooting — radar_state entity gone or explicitly unavailable
+    if (!radarState || rs === 'unavailable' || rs === 'unknown') {
+      setBanner('status-offline', 'Sensor offline — rebooting…');
+      return;
+    }
+
+    // 2. Radar re-initializing
+    if (rs === 'Booting' || rs === 'Init sent' || rs === 'Re-init') {
+      setBanner('status-reinit', `Radar initializing (${rs})…`);
+      return;
+    }
+
+    // 3. Calibrating
     const edge = this._hass.states[`binary_sensor.${deviceName}_calibrating_edge`];
     const intf = this._hass.states[`binary_sensor.${deviceName}_calibrating_interference`];
     const edgeOn = edge && edge.state === 'on';
     const intfOn = intf && intf.state === 'on';
-    if (!edgeOn && !intfOn) {
-      banner.hidden = true;
+    if (edgeOn || intfOn) {
+      let msg;
+      if (edgeOn && intfOn) msg = 'Calibrating edge + interference…';
+      else if (edgeOn)      msg = 'Calibrating room boundaries…';
+      else                  msg = 'Calibrating interference…';
+      setBanner('status-calibrating', msg);
       return;
     }
-    banner.hidden = false;
-    const label = banner.querySelector('.fp2-calibration-text');
-    if (label) {
-      if (edgeOn && intfOn) label.textContent = 'Calibrating edge + interference…';
-      else if (edgeOn)      label.textContent = 'Calibrating room boundaries…';
-      else                  label.textContent = 'Calibrating interference…';
-    }
+
+    // 4. Idle — hide
+    banner.hidden = true;
+    banner.className = 'fp2-status-banner';
   }
 
   setConfig(config) {
@@ -187,9 +214,9 @@ class AqaraFP2Card extends HTMLElement {
             </button>
           </div>
         </div>
-        <div class="fp2-calibration-banner" hidden>
+        <div class="fp2-status-banner" hidden>
           <span class="fp2-spinner"></span>
-          <span class="fp2-calibration-text">Calibrating…</span>
+          <span class="fp2-status-text">…</span>
         </div>
         <div class="fp2-edit-toolbar" hidden>
           <select class="fp2-layer-select" title="Layer to edit">
@@ -296,25 +323,46 @@ class AqaraFP2Card extends HTMLElement {
         .fp2-info .fp2-dot.zone-on { background: #42A5F5; }
         .fp2-info .fp2-dot.zone-off { background: rgba(66,165,245,0.3); }
 
-        /* --- Calibration banner --- */
-        .fp2-calibration-banner {
+        /* --- Status banner (calibrating / reiniting / offline) --- */
+        .fp2-status-banner {
           display: flex;
           align-items: center;
           gap: 10px;
           padding: 8px 12px;
           margin-bottom: 8px;
-          background: rgba(255,152,0,0.15);
-          border: 1px solid rgba(255,152,0,0.5);
+          border: 1px solid;
           border-radius: 8px;
           color: var(--primary-text-color);
           font-size: 13px;
         }
-        .fp2-calibration-banner[hidden] { display: none; }
+        .fp2-status-banner[hidden] { display: none; }
+        .fp2-status-banner.status-calibrating {
+          background: rgba(255,152,0,0.15);
+          border-color: rgba(255,152,0,0.5);
+        }
+        .fp2-status-banner.status-calibrating .fp2-spinner {
+          border: 2px solid rgba(255,152,0,0.3);
+          border-top-color: rgba(255,152,0,1);
+        }
+        .fp2-status-banner.status-reinit {
+          background: rgba(33,150,243,0.15);
+          border-color: rgba(33,150,243,0.5);
+        }
+        .fp2-status-banner.status-reinit .fp2-spinner {
+          border: 2px solid rgba(33,150,243,0.3);
+          border-top-color: rgba(33,150,243,1);
+        }
+        .fp2-status-banner.status-offline {
+          background: rgba(244,67,54,0.15);
+          border-color: rgba(244,67,54,0.5);
+        }
+        .fp2-status-banner.status-offline .fp2-spinner {
+          border: 2px solid rgba(244,67,54,0.3);
+          border-top-color: rgba(244,67,54,1);
+        }
         .fp2-spinner {
           width: 14px;
           height: 14px;
-          border: 2px solid rgba(255,152,0,0.3);
-          border-top-color: rgba(255,152,0,1);
           border-radius: 50%;
           animation: fp2-spin 0.8s linear infinite;
         }
