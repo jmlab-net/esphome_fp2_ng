@@ -135,6 +135,15 @@ class AqaraFP2Card extends HTMLElement {
           </button>
           <span class="fp2-dirty-dot" title="Unsaved edits"></span>
           <span class="fp2-edit-hint">click &amp; drag to paint / erase</span>
+          <span class="fp2-vsep"></span>
+          <label class="fp2-mount-label" title="Mount position (triggers radar re-init)">
+            Mount:
+            <select class="fp2-mount-select">
+              <option value="Wall">Wall</option>
+              <option value="Left Corner">Left Corner</option>
+              <option value="Right Corner">Right Corner</option>
+            </select>
+          </label>
         </div>
         <div class="fp2-content">
           <canvas id="fp2-canvas"></canvas>
@@ -270,6 +279,27 @@ class AqaraFP2Card extends HTMLElement {
           color: var(--secondary-text-color);
           margin-left: auto;
         }
+        .fp2-vsep {
+          width: 1px;
+          height: 20px;
+          background: var(--divider-color);
+          margin: 0 2px;
+        }
+        .fp2-mount-label {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 13px;
+          color: var(--secondary-text-color);
+        }
+        .fp2-mount-label select {
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          border: 1px solid var(--divider-color);
+          border-radius: 6px;
+          padding: 4px 8px;
+          font-size: 13px;
+        }
         /* Canvas flash feedback on apply */
         #fp2-canvas {
           transition: box-shadow 0.2s ease;
@@ -293,6 +323,7 @@ class AqaraFP2Card extends HTMLElement {
     this.querySelector(".fp2-apply-btn").addEventListener("click", () => this.applyPendingGrid());
     this.querySelector(".fp2-cancel-btn").addEventListener("click", () => this.cancelEdit());
     this.querySelector(".fp2-layer-select").addEventListener("change", (e) => this.setEditLayer(e.target.value));
+    this.querySelector(".fp2-mount-select").addEventListener("change", (e) => this.handleMountChange(e));
 
     // Pointer-driven paint/erase. Pointer events cover mouse + touch + pen with
     // a single API; pointerdown also fires a click afterwards, so nothing here
@@ -877,6 +908,21 @@ class AqaraFP2Card extends HTMLElement {
       applyBtn.disabled = !this._isDirty() || this._applyInFlight;
     }
     this._syncLayerSelect();
+    this._syncMountSelect();
+  }
+
+  // Mirror the live state of select.<device>_mounting_position into the
+  // card's dropdown. Called on every toolbar update so a change made
+  // elsewhere (HA UI, automation) stays reflected here.
+  _syncMountSelect() {
+    const sel = this.querySelector('.fp2-mount-select');
+    if (!sel || !this._hass) return;
+    const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+    const entity = `select.${deviceName}_mounting_position`;
+    const st = this._hass.states[entity];
+    if (st && st.state && sel.value !== st.state) {
+      sel.value = st.state;
+    }
   }
 
   _isDirty() {
@@ -985,6 +1031,40 @@ class AqaraFP2Card extends HTMLElement {
     setTimeout(() => {
       this.canvas && this.canvas.classList.remove('flash-ok', 'flash-err');
     }, 500);
+  }
+
+  // Mount position change — driven from the toolbar dropdown. Wrapped in a
+  // confirm() because selecting here fires an immediate radar re-init on the
+  // device (~15-30s during which zones/grids are re-sent). The HA-side entity
+  // also fires the re-init, but this card-path at least protects against
+  // accidental dropdown clicks in the Lovelace view.
+  async handleMountChange(e) {
+    const target = e.target;
+    const newValue = target.value;
+    const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+    const entity = `select.${deviceName}_mounting_position`;
+    const cur = this._hass && this._hass.states[entity] && this._hass.states[entity].state;
+    if (cur === newValue) return;
+
+    const ok = window.confirm(
+      `Change mount position from "${cur}" to "${newValue}"?\n\n` +
+      `This triggers a full radar re-initialization (~15-30s). ` +
+      `Zones, grids, and operating mode will be re-sent under the new orientation.`
+    );
+    if (!ok) {
+      // Revert the dropdown to the pre-click value
+      target.value = cur || 'Wall';
+      return;
+    }
+    try {
+      await this._hass.callService('select', 'select_option', {
+        entity_id: entity,
+        option: newValue,
+      });
+    } catch (err) {
+      console.error('[FP2 Card] Mount change failed:', err);
+      target.value = cur || 'Wall';
+    }
   }
 
   // 14x14 grid of 0/1 → 56-char hex matching grid_to_hex_card_format in C++.
