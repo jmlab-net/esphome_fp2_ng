@@ -2579,6 +2579,11 @@ void FP2Component::trigger_reset_radar() {
   state_ = SYNC;
   command_queue_.clear();
   waiting_for_ack_attr_id_ = AttrId::INVALID;
+  // Publish "Booting" so HA entities (and the card banner) see the
+  // transition immediately. Without this, radar_state stays on the
+  // previous value until check_initialization_ publishes "Init sent"
+  // or "Ready" 1-2 s later — long enough to feel broken.
+  publish_radar_state_("Booting");
 }
 
 void FP2Component::trigger_reboot_sensor() {
