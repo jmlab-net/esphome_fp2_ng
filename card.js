@@ -38,6 +38,9 @@ class AqaraFP2Card extends HTMLElement {
     if (!this.content) {
       this.initializeCard();
     }
+    // Detect device-config changes that live *outside* the map_config JSON
+    // so the card refetches instead of waiting for a page reload.
+    this._detectConfigChanges(hass);
     // Throttle updates — radar streams at 2-3Hz but hass fires on ANY state change
     const now = Date.now();
     if (now - this._lastRender < 250) {
@@ -50,6 +53,27 @@ class AqaraFP2Card extends HTMLElement {
       return;
     }
     this._doUpdate();
+  }
+
+  // Watch HA entity states that, if changed, invalidate the cached mapConfig
+  // (fetched one-shot at init). Currently: mounting_position. Could extend to
+  // left_right_reverse once that's exposed as an entity.
+  _detectConfigChanges(hass) {
+    if (!this.config || !this.config.entity_prefix) return;
+    const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+    const mount = hass.states[`select.${deviceName}_mounting_position`];
+    const mountState = mount ? mount.state : null;
+    if (mountState && this._lastKnownMount !== undefined && mountState !== this._lastKnownMount) {
+      // Small delay so the backend has time to finish persisting + kicking
+      // the re-init before we ask for the fresh map_config. This also
+      // debounces against rapid hass state bursts during re-init.
+      if (this._mountRefetchTimer) clearTimeout(this._mountRefetchTimer);
+      this._mountRefetchTimer = setTimeout(() => {
+        this._mountRefetchTimer = null;
+        this.fetchMapConfig();
+      }, 500);
+    }
+    this._lastKnownMount = mountState;
   }
 
   _doUpdate() {
