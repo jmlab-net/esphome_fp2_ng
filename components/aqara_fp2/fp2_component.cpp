@@ -1441,9 +1441,19 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   // When sleep_mode_active_ we route to the vitals decode; otherwise to the
   // tracking decode.
   if (this->sleep_mode_active_) {
+    // Diagnostic: dump the raw blob so we can see what FW3 is actually sending.
+    if (debug_mode_) {
+      char hexbuf[128];
+      int n = 0;
+      for (size_t i = 0; i < payload.size() && n < 120; i++) {
+        n += snprintf(hexbuf + n, sizeof(hexbuf) - n, "%02x ", payload[i]);
+      }
+      ESP_LOGD(TAG, "Vitals frame (size=%zu): %s", payload.size(), hexbuf);
+    }
     uint8_t vcount = payload[5];
     if (vcount == 0 || payload.size() < 6 + 14) {
       // Empty vitals frame (FW3 FUN_0002dc40 clear-path) or truncated payload.
+      ESP_LOGD(TAG, "Vitals: empty frame (count=%u size=%zu) — no target locked", vcount, payload.size());
       if (heart_rate_sensor_ != nullptr) heart_rate_sensor_->publish_state(NAN);
       if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(NAN);
       return;
