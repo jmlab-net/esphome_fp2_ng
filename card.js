@@ -1085,7 +1085,21 @@ class AqaraFP2Card extends HTMLElement {
     if (editBtn) editBtn.classList.toggle('active', !!this.editMode);
     if (dirtyDot) dirtyDot.classList.toggle('active', this._isDirty());
     if (applyBtn) {
-      applyBtn.disabled = !this._isDirty() || this._applyInFlight;
+      // Apply is always clickable in edit mode — acts as "Done" when the
+      // grid isn't dirty (no-op commit, just exits edit mode). This gives
+      // the user a single predictable "I'm finished with this zone" action
+      // regardless of whether they only tweaked mode/sensitivity or also
+      // repainted the grid.
+      applyBtn.disabled = this._applyInFlight;
+      const dirty = this._isDirty();
+      const icon = applyBtn.querySelector('ha-icon');
+      const labelText = dirty ? ' Apply' : ' Done';
+      if (icon) icon.setAttribute('icon', dirty ? 'mdi:content-save' : 'mdi:check');
+      // Replace trailing text (after the ha-icon) without touching the icon node.
+      const lastNode = applyBtn.lastChild;
+      if (lastNode && lastNode.nodeType === Node.TEXT_NODE) {
+        lastNode.textContent = labelText;
+      }
     }
     this._syncLayerSelect();
     this._renderZonesPanel();
@@ -1250,8 +1264,13 @@ class AqaraFP2Card extends HTMLElement {
   // --- Edit mode: apply / cancel -------------------------------------------
 
   async applyPendingGrid() {
-    if (!this.editMode || !this.pendingGrid) return;
-    if (!this._isDirty() || this._applyInFlight) return;
+    if (!this.editMode) return;
+    if (this._applyInFlight) return;
+    // "Done" path — nothing to commit, just leave edit mode.
+    if (!this.pendingGrid || !this._isDirty()) {
+      this.cancelEdit();
+      return;
+    }
     this._applyInFlight = true;
     this._updateEditToolbar();
 
@@ -1271,9 +1290,12 @@ class AqaraFP2Card extends HTMLElement {
         this._flashCanvas('ok');
         // Refetch to pick up authoritative state (handles any server-side shaping)
         await this.fetchMapConfig();
-        // New baseline = what the device now reports (or our pending if refetch
-        // raced and editMode still set)
-        this._originalGrid = this.pendingGrid.map(row => [...row]);
+        // Exit edit mode — commit is finished, user "applied and moved on".
+        // cancelEdit just tears down the in-memory edit state; the committed
+        // grid is already persistent on the device.
+        this._applyInFlight = false;
+        this.cancelEdit();
+        return;
       } else {
         this._flashCanvas('err');
         const err = resp && resp.response && resp.response.error;
