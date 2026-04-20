@@ -2093,6 +2093,15 @@ void FP2Component::json_get_map_data(JsonObject root) {
       zone_obj["grid"] = grid_to_hex_card_format(zone->grid);
       if (zone->presence_sensor != nullptr) {
         zone_obj["presence_sensor"] = zone->presence_sensor->get_name().c_str();
+        // object_id is the entity-id suffix (no device prefix). The card
+        // uses it to build the full entity_id — robust to any YAML name.
+        zone_obj["presence_sensor_id"] = zone->presence_sensor->get_object_id().c_str();
+      }
+      if (zone->zone_people_count_sensor != nullptr) {
+        zone_obj["count_id"] = zone->zone_people_count_sensor->get_object_id().c_str();
+      }
+      if (zone->mode_select != nullptr) {
+        zone_obj["mode_id"] = zone->mode_select->get_object_id().c_str();
       }
     }
   }

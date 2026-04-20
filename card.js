@@ -472,7 +472,7 @@ class AqaraFP2Card extends HTMLElement {
     // Edit-mode controls
     this.querySelector(".edit-toggle").addEventListener("click", () => this.toggleEditMode());
     this.querySelector(".fp2-apply-btn").addEventListener("click", () => this.applyPendingGrid());
-    this.querySelector(".fp2-cancel-btn").addEventListener("click", () => this.cancelEdit());
+    this.querySelector(".fp2-cancel-btn").addEventListener("click", () => this.discardLayerEdits());
     this.querySelector(".fp2-layer-select").addEventListener("change", (e) => this.setEditLayer(e.target.value));
 
     // Pointer-driven paint/erase. Pointer events cover mouse + touch + pen with
@@ -573,25 +573,33 @@ class AqaraFP2Card extends HTMLElement {
     if (mapConfig.zones && Array.isArray(mapConfig.zones)) {
       mapConfig.zones.forEach((zc, i) => {
         const zoneId = typeof zc.id === 'number' ? zc.id : (i + 1);
-        // Occupancy priority: presence_sensor (if configured), otherwise
-        // derive from people_count > 0 on the zone's count sensor. Count
-        // entity name follows the ESPHome naming convention.
+        // Backend now emits object_id for each zone-scoped entity so we
+        // can build the full entity_id regardless of how the user named
+        // them in YAML. Fall back to the old convention for older firmware.
+        const presenceEntity = zc.presence_sensor_id
+            ? `binary_sensor.${deviceName}_${zc.presence_sensor_id}` : null;
+        const countEntity = zc.count_id
+            ? `sensor.${deviceName}_${zc.count_id}`
+            : (getState(`sensor.${deviceName}_zone_${zoneId}_count`) != null
+                ? `sensor.${deviceName}_zone_${zoneId}_count`
+                : `sensor.${deviceName}_zone_${zoneId}_people_count`);
+        const modeEntity = zc.mode_id
+            ? `select.${deviceName}_${zc.mode_id}`
+            : `select.${deviceName}_zone_${zoneId}_mode`;
+
+        // Occupancy priority: presence sensor if configured, else count > 0.
         let occupancy = false;
-        if (zc.presence_sensor) {
-          occupancy = getState(`binary_sensor.${zc.presence_sensor}`) === "on";
+        if (presenceEntity) {
+          occupancy = getState(presenceEntity) === "on";
         } else {
-          const countState = getState(`sensor.${deviceName}_zone_${zoneId}_count`)
-                          ?? getState(`sensor.${deviceName}_zone_${zoneId}_people_count`);
-          const countNum = parseFloat(countState);
+          const countNum = parseFloat(getState(countEntity));
           occupancy = !isNaN(countNum) && countNum > 0;
         }
-        // Runtime zone mode: Off / Low / Medium / High. When Off, don't
-        // render the zone outline at all — it's deactivated.
-        const modeState = getState(`select.${deviceName}_zone_${zoneId}_mode`);
-        const mode = modeState || 'Low';  // assume active if no select entity
+        const mode = getState(modeEntity) || 'Low';
         zones.push({
           id: zc.presence_sensor || `zone_${zoneId}`,
           _rawId: zoneId,
+          _modeEntity: modeEntity,    // stored so the edit panel + _handleZoneModeChange use the same source of truth
           name: zc.name || (zc.presence_sensor || `Zone ${zoneId}`).replace(/^.*_/, '').replace(/_/g, ' '),
           map: parseGrid(zc.grid),
           occupancy,
@@ -1069,6 +1077,22 @@ class AqaraFP2Card extends HTMLElement {
     this._doUpdate();
   }
 
+  // Cancel button: throw away uncommitted grid edits for the currently-
+  // edited layer, but stay in edit mode so the user can pick a different
+  // layer or retry. Only the pencil toggle exits edit mode entirely.
+  discardLayerEdits() {
+    if (!this.editMode) return;
+    if (this._originalGrid) {
+      this.pendingGrid = this._originalGrid.map(row => [...row]);
+    } else {
+      this.pendingGrid = null;
+    }
+    this.painting = false;
+    this._paintedCells = null;
+    this._updateEditToolbar();
+    this._doUpdate();
+  }
+
   _syncLayerSelect() {
     const sel = this.querySelector('.fp2-layer-select');
     if (!sel || !this.editMode) return;
@@ -1085,21 +1109,12 @@ class AqaraFP2Card extends HTMLElement {
     if (editBtn) editBtn.classList.toggle('active', !!this.editMode);
     if (dirtyDot) dirtyDot.classList.toggle('active', this._isDirty());
     if (applyBtn) {
-      // Apply is always clickable in edit mode — acts as "Done" when the
-      // grid isn't dirty (no-op commit, just exits edit mode). This gives
-      // the user a single predictable "I'm finished with this zone" action
-      // regardless of whether they only tweaked mode/sensitivity or also
-      // repainted the grid.
-      applyBtn.disabled = this._applyInFlight;
-      const dirty = this._isDirty();
-      const icon = applyBtn.querySelector('ha-icon');
-      const labelText = dirty ? ' Apply' : ' Done';
-      if (icon) icon.setAttribute('icon', dirty ? 'mdi:content-save' : 'mdi:check');
-      // Replace trailing text (after the ha-icon) without touching the icon node.
-      const lastNode = applyBtn.lastChild;
-      if (lastNode && lastNode.nodeType === Node.TEXT_NODE) {
-        lastNode.textContent = labelText;
-      }
+      // Apply commits the current layer's grid edits and stays in edit
+      // mode (user continues by switching layer in the top dropdown, or
+      // exits via the pencil toggle). Disabled when there's nothing to
+      // commit — mode changes go through their own path and don't touch
+      // the grid.
+      applyBtn.disabled = !this._isDirty() || this._applyInFlight;
     }
     this._syncLayerSelect();
     this._renderZonesPanel();
@@ -1132,8 +1147,15 @@ class AqaraFP2Card extends HTMLElement {
       return;
     }
 
+    // Resolve the real mode entity via mapConfig (falls back to the old
+    // naming convention for firmwares that don't emit mode_id yet).
     const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
-    const modeEntity = `select.${deviceName}_zone_${editingZoneId}_mode`;
+    const zones = (this.mapConfig && this.mapConfig.zones) || [];
+    const zoneCfg = zones.find(z => (typeof z.id === 'number' ? z.id : null) === editingZoneId)
+                 || zones[editingZoneId - 1];
+    const modeEntity = (zoneCfg && zoneCfg.mode_id)
+        ? `select.${deviceName}_${zoneCfg.mode_id}`
+        : `select.${deviceName}_zone_${editingZoneId}_mode`;
     const modeState = this._hass.states[modeEntity];
     const mode = modeState ? modeState.state : 'Low';
 
@@ -1266,9 +1288,10 @@ class AqaraFP2Card extends HTMLElement {
   async applyPendingGrid() {
     if (!this.editMode) return;
     if (this._applyInFlight) return;
-    // "Done" path — nothing to commit, just leave edit mode.
+    // Nothing dirty — nothing to commit. Stay in edit mode so the user can
+    // continue working on other zones/layers via the top dropdown. Exit
+    // the edit session with the pencil toggle.
     if (!this.pendingGrid || !this._isDirty()) {
-      this.cancelEdit();
       return;
     }
     this._applyInFlight = true;
@@ -1290,12 +1313,10 @@ class AqaraFP2Card extends HTMLElement {
         this._flashCanvas('ok');
         // Refetch to pick up authoritative state (handles any server-side shaping)
         await this.fetchMapConfig();
-        // Exit edit mode — commit is finished, user "applied and moved on".
-        // cancelEdit just tears down the in-memory edit state; the committed
-        // grid is already persistent on the device.
-        this._applyInFlight = false;
-        this.cancelEdit();
-        return;
+        // Stay in edit mode — committed grid becomes the new baseline so
+        // _isDirty() returns false. User can switch layers via the top
+        // dropdown and keep editing, or click the pencil to exit entirely.
+        this._originalGrid = this.pendingGrid.map(row => [...row]);
       } else {
         this._flashCanvas('err');
         const err = resp && resp.response && resp.response.error;
