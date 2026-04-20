@@ -147,17 +147,24 @@ void FP2OperatingModeSelect::control(const std::string &value) {
 }
 
 void FP2Component::set_operating_mode(const std::string &mode) {
-  // All 4 modes use the same radar firmware. Mode is changed by:
-  // 1. Setting SLEEP_REPORT_ENABLE (needed for mode 9)
-  // 2. Writing WORK_MODE (SubID 0x0116) which triggers FUN_00013d9c:
-  //    flash save + radar self-restart
-  // 3. Resetting our init state for re-init after restart
+  // Scene modes map to distinct radar firmware images that WORK_MODE selects:
+  //   3 = Zone Detection            → FW1 (mcu_ota group 0, stripped build paths)
+  //   8 = Fall / Sleep / Tracking   → 3d_people_counting MSS (mcu_ota group 1,
+  //                                    E:/workspace/update12/3d_people_counting_mss)
+  //   9 = Vital Signs               → FW3 (mcu_ota group 2, mmwave_industrial_toolbox_4_11)
   //
-  // Scene modes confirmed via Ghidra:
-  //   3 = Zone Detection (wall, multi-person, Config A chirp)
-  //   8 = Fall Detection (ceiling, single person, Config B chirp)
-  //   9 = Sleep Monitoring (bedside, single person, Config B chirp)
-  //   Fall + Positioning = mode 8 with location reporting enabled
+  // 2026-04-19 reversal: mode 9 appears to be abandoned/half-migrated in Aqara's
+  // codebase. Cross-firmware binary analysis showed FW3 only has 1 of the 2
+  // 0x0117 HR/BR emit sites that FW1 and mode-8's 3d_people_counting have, and
+  // FW3's emit gate (ctx+0xb8==1) is never set to 1 by any code in that image.
+  // Meanwhile the 3d_people_counting firmware (mode 8) contains the full sleep
+  // codepath AND the fall codepath, gated by attr writes. So both
+  // "Sleep Monitoring" and "Fall Detection" now use scene_mode=8 and are
+  // differentiated by the SLEEP_REPORT_ENABLE attr.
+  //
+  // WORK_MODE (SubID 0x0116) WRITE triggers flash save + radar self-restart
+  // (FUN_00013d9c). SLEEP_REPORT_ENABLE (0x0156) must be written before the
+  // restart so it's persisted in the saved state.
 
   uint8_t scene_mode = 3;
   bool sleep = false;
@@ -167,7 +174,7 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   } else if (mode == "Fall Detection") {
     scene_mode = 8;
   } else if (mode == "Sleep Monitoring") {
-    scene_mode = 9;
+    scene_mode = 8;
     sleep = true;
   } else if (mode == "Fall + Positioning") {
     scene_mode = 8;
