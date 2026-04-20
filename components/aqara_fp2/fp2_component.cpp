@@ -1147,9 +1147,27 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 bool active = (state % 2 == 0);
                 z->publish_motion(active);
                 // Infer presence from motion — 0x0142 may not fire on boot.
-                // Count (0x0175) separately clears presence on count=0.
+                // Same target-cross-reference filter as ZONE_PRESENCE — reject
+                // motion-based presence inference if no tracked target is
+                // actually inside this zone's grid. Prevents motion bleed
+                // from adjacent zones from triggering phantom presence.
                 if (active) {
-                    z->publish_presence(true);
+                    const uint32_t cache_age = millis() - last_targets_ms_;
+                    const bool cache_fresh = last_targets_ms_ != 0 &&
+                                              cache_age < TARGET_CACHE_STALE_MS;
+                    bool any_target_in_zone = true;   // default-allow on stale cache
+                    if (cache_fresh) {
+                        any_target_in_zone = false;
+                        for (const auto &t : last_targets_) {
+                            if (is_target_in_zone_(t.x, t.y, z->grid)) {
+                                any_target_in_zone = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (any_target_in_zone) {
+                        z->publish_presence(true);
+                    }
                 }
                 break;
               }
@@ -1508,7 +1526,40 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 
             for (auto &z : zones_) {
                 if (z->id == zone_id) {
-                    z->publish_presence(state != 0);
+                    // Target-cross-reference filter. For on events, require
+                    // at least one currently-tracked target to actually fall
+                    // inside this zone's grid. The radar sometimes fires
+                    // ZONE_PRESENCE for multipath / boundary-bleed reflections
+                    // where no real target is in the zone — rejecting those
+                    // here mirrors what stock Aqara firmware does and fixes
+                    // the "Dining fires while you're in Living Room" bug.
+                    //
+                    // Off events are always honoured so legitimate clears
+                    // aren't blocked. Stale cache (>5s since last 0x0117)
+                    // falls through to the radar's raw signal.
+                    if (state != 0) {
+                        const uint32_t cache_age = millis() - last_targets_ms_;
+                        const bool cache_fresh = last_targets_ms_ != 0 &&
+                                                  cache_age < TARGET_CACHE_STALE_MS;
+                        if (cache_fresh) {
+                            bool any_target_in_zone = false;
+                            for (const auto &t : last_targets_) {
+                                if (is_target_in_zone_(t.x, t.y, z->grid)) {
+                                    any_target_in_zone = true;
+                                    break;
+                                }
+                            }
+                            if (!any_target_in_zone) {
+                                ESP_LOGI(TAG, "Zone %d presence=ON rejected — "
+                                              "no tracked target in zone (cache age %u ms)",
+                                         zone_id, cache_age);
+                                break;
+                            }
+                        }
+                        z->publish_presence(true);
+                    } else {
+                        z->publish_presence(false);
+                    }
                     break;
                 }
             }
@@ -1640,6 +1691,12 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   std::vector<uint8_t> binary_data;
   binary_data.push_back(count);
 
+  // Also refresh the last-targets cache so ZONE_PRESENCE can reject
+  // phantom events for zones with no actual tracked target inside.
+  last_targets_.clear();
+  last_targets_.reserve(count);
+  last_targets_ms_ = millis();
+
   for (int i = 0; i < count; i++) {
     int offset = 6 + (i * 14);
     if (offset + 14 > payload.size())
@@ -1649,6 +1706,15 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
     binary_data.insert(binary_data.end(),
                        payload.begin() + offset,
                        payload.begin() + offset + 14);
+
+    CachedTarget ct;
+    ct.id = payload[offset];
+    ct.x = (int16_t)((payload[offset + 1] << 8) | payload[offset + 2]);
+    ct.y = (int16_t)((payload[offset + 3] << 8) | payload[offset + 4]);
+    ct.active = payload[offset + 13] != 0;
+    if (ct.active) {
+      last_targets_.push_back(ct);
+    }
   }
 
   // Throttle publishes to avoid flooding HA (radar streams at 10-20Hz)

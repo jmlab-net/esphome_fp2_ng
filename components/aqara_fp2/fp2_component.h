@@ -683,6 +683,21 @@ protected:
   // of unrelated code. Zone prefs are additionally gated by
   // zone_defaults_hash_pref_: if the user changes a zone's grid in YAML and
   // reflashes, saved runtime edits for that set of zones are discarded.
+  // Target-position cache from the most recent 0x0117 report. Used to
+  // filter ZONE_PRESENCE=on events — a phantom zone-presence without any
+  // tracked target inside the zone's grid is rejected as multipath/bleed.
+  // Stock Aqara firmware does something similar (per user observation
+  // that it doesn't produce the false positives we see).
+  struct CachedTarget {
+    int16_t x;
+    int16_t y;
+    uint8_t id;
+    bool active;
+  };
+  std::vector<CachedTarget> last_targets_;
+  uint32_t last_targets_ms_{0};
+  static const uint32_t TARGET_CACHE_STALE_MS = 5000;
+
   ESPPreferenceObject edge_pref_, interference_pref_, exit_pref_;
   std::vector<ESPPreferenceObject> zone_prefs_;        // per-zone grid prefs
   std::vector<ESPPreferenceObject> zone_mode_prefs_;   // per-zone mode prefs (uint8)
