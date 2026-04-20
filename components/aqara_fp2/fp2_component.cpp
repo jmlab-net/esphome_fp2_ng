@@ -1222,6 +1222,15 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (heart_rate_dev_sensor_ != nullptr) {
                     heart_rate_dev_sensor_->publish_state(NAN);
                 }
+                // Clear target tracking blob. Without this, the last
+                // non-empty 0x0117 payload keeps rendering in HA (and
+                // the card) as a ghost target glued to its final reported
+                // position. The radar stops emitting 0x0117 when nobody
+                // is present, so the stale value would otherwise linger
+                // indefinitely.
+                if (target_tracking_sensor_ != nullptr) {
+                    target_tracking_sensor_->set_has_state(false);
+                }
             }
         }
         break;

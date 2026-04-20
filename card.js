@@ -587,14 +587,17 @@ class AqaraFP2Card extends HTMLElement {
             ? `select.${deviceName}_${zc.mode_id}`
             : `select.${deviceName}_zone_${zoneId}_mode`;
 
-        // Occupancy priority: presence sensor if configured, else count > 0.
+        // Occupancy priority: count > 0 wins when the count sensor is
+        // live, with presence_sensor as a secondary signal. The radar's
+        // ZONE_PRESENCE (0x0142) has its own linger (up to tens of seconds)
+        // that makes the card feel sluggish when someone leaves a zone;
+        // the native count (0x0175) updates in ~1-2s.
+        // Occupancy = (count > 0) OR (presence_sensor is on).
         let occupancy = false;
-        if (presenceEntity) {
-          occupancy = getState(presenceEntity) === "on";
-        } else {
-          const countNum = parseFloat(getState(countEntity));
-          occupancy = !isNaN(countNum) && countNum > 0;
-        }
+        const countRaw = getState(countEntity);
+        const countNum = parseFloat(countRaw);
+        if (!isNaN(countNum) && countNum > 0) occupancy = true;
+        else if (presenceEntity && getState(presenceEntity) === "on") occupancy = true;
         const mode = getState(modeEntity) || 'Low';
         zones.push({
           id: zc.presence_sensor || `zone_${zoneId}`,
