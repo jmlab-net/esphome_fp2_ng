@@ -1404,42 +1404,23 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   if (payload.size() < 6 || payload[2] != 0x06) {
     return;
   }
-  uint16_t blob_len = ((uint16_t) payload[3] << 8) | (uint16_t) payload[4];
-
-  // In work_mode=9 (sleep/vital signs firmware), the same SubID 0x0117 carries
-  // heart-rate and respiration-rate data instead of target tracking. Confirmed
-  // via Ghidra of fp2_radar_vitalsigns.bin FUN_00006c84:
-  //   blob[0]       = 1 (header)
-  //   blob[1]       = track_id
-  //   blob[2..3]    = round(HR_bpm     * 100) as uint16 big-endian
-  //   blob[4..5]    = round(BR_per_min * 100) as uint16 big-endian
-  //   blob[6..14]   = zero padding
-  // Scaling constant 100.0f verified as 0x42C80000 in the firmware.
-  if (sleep_mode_active_ && blob_len == 15 && payload.size() >= 20) {
-    // Diagnostic: dump raw blob to find correct HR/BR offsets for mode-8 payload.
-    // FW3 (mode 9) decode positions produce nonsense in mode-8 3d_people_counting.
-    char hex[3 * 15 + 1];
-    for (size_t i = 0; i < 15 && (5 + i) < payload.size(); i++) {
-      snprintf(hex + 3 * i, 4, "%02X ", payload[5 + i]);
-    }
-    ESP_LOGI(TAG, "Vitals 0x117 raw blob[15]: %s", hex);
-
-    uint8_t track_id = payload[6];
-    uint16_t hr_scaled = ((uint16_t) payload[7] << 8) | (uint16_t) payload[8];
-    uint16_t br_scaled = ((uint16_t) payload[9] << 8) | (uint16_t) payload[10];
-    float hr = hr_scaled / 100.0f;
-    float br = br_scaled / 100.0f;
-    ESP_LOGI(TAG, "Vitals 0x117: tid=%u HR=%.1f bpm BR=%.1f br/min", track_id, hr, br);
-    if (heart_rate_sensor_ != nullptr && hr_scaled > 0) {
-      heart_rate_sensor_->publish_state(hr);
-    }
-    if (respiration_rate_sensor_ != nullptr && br_scaled > 0) {
-      respiration_rate_sensor_->publish_state(br);
-    }
-    return;
-  }
-
-  // Modes 3 / 8: location tracking per-target.
+  // 0x0117 in the 3d_people_counting firmware (modes 3 and 8, including Sleep
+  // Monitoring which routes to mode 8) is the per-target tracking record:
+  //   blob[0]          target_count
+  //   per target, 14 bytes:
+  //     [0]            track_id  (u8)
+  //     [1..2]         X         (u16 BE, cm)
+  //     [3..4]         Y         (u16 BE, cm; clamped >=0 in mode 3)
+  //     [5..6]         reserved (0)
+  //     [7..8]         velocity  (u16 BE, cm/s)
+  //     [9..10]        SNR       (u16 BE)
+  //     [11]           status flag A (0/1 active)
+  //     [12]           status flag B (overridden to 0xFF when A != 0)
+  //     [13]           status flag C
+  // Verified in Ghidra 2026-04-20: FUN_0000cdbc @ 0xcdbc in fp2_radar_dsp.bin
+  // (mislabelled filename — actually 3d_people_counting_mss). There is no
+  // HR/BR code in this image; heart-rate / respiration frames only exist in
+  // the abandoned FW3 vital-signs firmware (mode 9) via FUN_00006c84.
   if (!this->location_reporting_active_) {
     return;
   }
