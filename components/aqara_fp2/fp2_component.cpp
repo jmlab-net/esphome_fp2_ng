@@ -235,8 +235,26 @@ void FP2Component::set_operating_mode(const std::string &mode) {
     }
   }
 
-  // Write sleep enable flag to radar RAM
-  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);
+  // Write sleep enable flag to radar RAM.
+  //
+  // CRITICAL: value must be 9 (not 1) to trigger FW3 boot!
+  //
+  // The WORK_MODE handler (FUN_00016e18) copies config+0xb6c into boot
+  // params byte[4] before the radar restart. The SBL (FUN_000007d8) then
+  // selects the firmware image from boot params:
+  //   byte[2] == 1  OR  byte[4] == 9   →  FW3 (vitalsigns)
+  //   byte[2] == 8                     →  FW2 (3d_people_counting)
+  //   else                              →  FW1 (zone detection)
+  //
+  // Writing SLEEP_REPORT_ENABLE as bool true (= 1) puts byte[4]=1, which
+  // matches NONE of the FW3 conditions, so the SBL falls through to the
+  // default and loads FW1. That's why earlier tests showed 0x0117 frames
+  // carrying tracking data (FW1 format) instead of HR/BR (FW3 format).
+  //
+  // Writing the value 9 puts byte[4]=9 which is the sentinel the SBL checks
+  // for FW3. This is what the stock Aqara app does.
+  uint8_t sleep_flag = sleep ? 9 : 0;
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep_flag);
   // WORK_MODE write triggers flash save + radar self-restart
   enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, scene_mode);
 
