@@ -419,9 +419,9 @@ class AqaraFP2Card extends HTMLElement {
         }
         .fp2-zones-panel {
           display: flex;
-          flex-direction: column;
-          gap: 6px;
-          padding: 8px;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 12px;
           margin-bottom: 8px;
           background: var(--secondary-background-color);
           border: 1px solid var(--divider-color);
@@ -433,26 +433,23 @@ class AqaraFP2Card extends HTMLElement {
           display: flex;
           align-items: center;
           gap: 8px;
+          flex: 1;
         }
         .fp2-zone-row .fp2-zone-name {
-          min-width: 80px;
           font-weight: 500;
         }
-        .fp2-zone-row.inactive .fp2-zone-name { opacity: 0.5; }
-        .fp2-zone-row select {
+        .fp2-zone-row.inactive { opacity: 0.55; }
+        .fp2-zone-mode-label {
+          font-size: 12px;
+          color: var(--secondary-text-color);
+        }
+        .fp2-zones-panel select {
           background: var(--card-background-color);
           color: var(--primary-text-color);
           border: 1px solid var(--divider-color);
           border-radius: 6px;
-          padding: 3px 6px;
-          font-size: 12px;
-        }
-        .fp2-zone-row .fp2-zone-paint {
-          margin-left: auto;
-        }
-        .fp2-zone-row .fp2-btn.active {
-          background: var(--primary-color);
-          color: var(--text-primary-color);
+          padding: 3px 8px;
+          font-size: 13px;
         }
         /* Canvas flash feedback on apply */
         #fp2-canvas {
@@ -1099,48 +1096,60 @@ class AqaraFP2Card extends HTMLElement {
   // Changing the mode dropdown calls select.select_option on the HA-side
   // mode entity. Paint sets editMode to {type:'zone', id} and loads the
   // current grid into pendingGrid.
+  // Single-row panel showing the currently-selected zone's mode. Visible
+  // only when the top layer dropdown is on a Zone entry; hidden for edge /
+  // interference / entry-exit layers. DOM is built once per zone-id
+  // transition and kept stable. Subsequent hass updates just sync the
+  // select's value, but skip the sync while the user has the select
+  // focused (native dropdown open) so their interaction isn't clobbered.
   _renderZonesPanel() {
     const panel = this.querySelector('.fp2-zones-panel');
     if (!panel || !this._hass) return;
-    const zones = (this.mapConfig && this.mapConfig.zones) || [];
-    if (!this.editMode || zones.length === 0) {
-      panel.hidden = true;
+
+    const editingZoneId = (this.editMode && this.editMode.type === 'zone')
+        ? this.editMode.id : null;
+
+    if (editingZoneId === null) {
+      if (!panel.hidden) {
+        panel.hidden = true;
+        panel.innerHTML = '';
+      }
+      this._lastRenderedZone = null;
       return;
     }
-    panel.hidden = false;
+
     const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+    const modeEntity = `select.${deviceName}_zone_${editingZoneId}_mode`;
+    const modeState = this._hass.states[modeEntity];
+    const mode = modeState ? modeState.state : 'Low';
 
-    const rowsHtml = zones.map((z, i) => {
-      const zoneId = typeof z.id === 'number' ? z.id : (i + 1);
-      const modeEntity = `select.${deviceName}_zone_${zoneId}_mode`;
-      const modeState = this._hass.states[modeEntity];
-      const mode = modeState ? modeState.state : 'Low';
-      const inactive = mode === 'Off';
-      const isPainting = this.editMode && this.editMode.type === 'zone' && this.editMode.id === zoneId;
-      const opts = ['Off', 'Low', 'Medium', 'High'].map(
-        o => `<option value="${o}"${o === mode ? ' selected' : ''}>${o}</option>`
-      ).join('');
-      return `
-        <div class="fp2-zone-row${inactive ? ' inactive' : ''}" data-zone-id="${zoneId}">
-          <span class="fp2-zone-name">Zone ${zoneId}</span>
+    panel.hidden = false;
+
+    // Rebuild DOM only when the zone changes. Otherwise leave it alone so
+    // an open native dropdown doesn't get torn down mid-click by the
+    // throttled hass-update loop.
+    if (this._lastRenderedZone !== editingZoneId) {
+      const opts = ['Off', 'Low', 'Medium', 'High']
+          .map(o => `<option value="${o}">${o}</option>`).join('');
+      panel.innerHTML = `
+        <div class="fp2-zone-row" data-zone-id="${editingZoneId}">
+          <span class="fp2-zone-name">Zone ${editingZoneId}</span>
+          <label class="fp2-zone-mode-label">Mode:</label>
           <select class="fp2-zone-mode" data-entity="${modeEntity}">${opts}</select>
-          <button class="fp2-btn fp2-zone-paint${isPainting ? ' active' : ''}" data-zone-id="${zoneId}" title="Paint this zone's grid">
-            <ha-icon icon="mdi:brush"></ha-icon>
-          </button>
         </div>`;
-    }).join('');
-    panel.innerHTML = rowsHtml;
-
-    // Wire listeners (innerHTML replaced; must rebind each render)
-    panel.querySelectorAll('.fp2-zone-mode').forEach(sel => {
+      const sel = panel.querySelector('.fp2-zone-mode');
       sel.addEventListener('change', (e) => this._handleZoneModeChange(e));
-    });
-    panel.querySelectorAll('.fp2-zone-paint').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const zid = parseInt(e.currentTarget.getAttribute('data-zone-id'), 10);
-        this.setEditLayer(`zone:${zid}`);
-      });
-    });
+      this._lastRenderedZone = editingZoneId;
+    }
+
+    // Sync select value from HA state — but never while the user is
+    // actively interacting with it (dropdown open / keyboard focus).
+    const sel = panel.querySelector('.fp2-zone-mode');
+    if (sel && document.activeElement !== sel && sel.value !== mode) {
+      sel.value = mode;
+    }
+    const row = panel.querySelector('.fp2-zone-row');
+    if (row) row.classList.toggle('inactive', mode === 'Off');
   }
 
   async _handleZoneModeChange(e) {
