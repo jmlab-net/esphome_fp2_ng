@@ -1142,11 +1142,22 @@ class AqaraFP2Card extends HTMLElement {
       this._lastRenderedZone = editingZoneId;
     }
 
-    // Sync select value from HA state — but never while the user is
-    // actively interacting with it (dropdown open / keyboard focus).
+    // Sync select value from HA state — but never while:
+    //   (a) the user is actively interacting (dropdown open / focused), OR
+    //   (b) a pending change is still round-tripping to HA. Without (b),
+    //       the moment the user's click closes the dropdown the sync
+    //       snaps back to the pre-click value before the state update
+    //       catches up.
     const sel = panel.querySelector('.fp2-zone-mode');
-    if (sel && document.activeElement !== sel && sel.value !== mode) {
-      sel.value = mode;
+    if (sel) {
+      if (this._pendingZoneMode && mode === this._pendingZoneMode) {
+        this._pendingZoneMode = null;    // HA caught up, release the lock
+      }
+      if (document.activeElement !== sel
+          && !this._pendingZoneMode
+          && sel.value !== mode) {
+        sel.value = mode;
+      }
     }
     const row = panel.querySelector('.fp2-zone-row');
     if (row) row.classList.toggle('inactive', mode === 'Off');
@@ -1158,12 +1169,24 @@ class AqaraFP2Card extends HTMLElement {
     const newValue = sel.value;
     const cur = this._hass && this._hass.states[entity] && this._hass.states[entity].state;
     if (cur === newValue) return;
+    // Arm the sync-skip lock so the next few _renderZonesPanel() passes
+    // don't revert the select to `cur` while the round-trip is in flight.
+    this._pendingZoneMode = newValue;
+    // Safety valve: if HA never propagates the new value (service call
+    // succeeded but the state never flipped), clear the lock after 5s so
+    // a future legitimate HA-side change can still sync.
+    if (this._pendingZoneModeTimeout) clearTimeout(this._pendingZoneModeTimeout);
+    this._pendingZoneModeTimeout = setTimeout(() => {
+      this._pendingZoneMode = null;
+      this._pendingZoneModeTimeout = null;
+    }, 5000);
     try {
       await this._hass.callService('select', 'select_option', {
         entity_id: entity, option: newValue,
       });
     } catch (err) {
       console.error('[FP2 Card] Zone mode change failed:', err);
+      this._pendingZoneMode = null;
       sel.value = cur || 'Off';
     }
   }
