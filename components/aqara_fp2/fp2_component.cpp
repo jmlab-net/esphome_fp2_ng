@@ -1416,6 +1416,14 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   //   blob[6..14]   = zero padding
   // Scaling constant 100.0f verified as 0x42C80000 in the firmware.
   if (sleep_mode_active_ && blob_len == 15 && payload.size() >= 20) {
+    // Diagnostic: dump raw blob to find correct HR/BR offsets for mode-8 payload.
+    // FW3 (mode 9) decode positions produce nonsense in mode-8 3d_people_counting.
+    char hex[3 * 15 + 1];
+    for (size_t i = 0; i < 15 && (5 + i) < payload.size(); i++) {
+      snprintf(hex + 3 * i, 4, "%02X ", payload[5 + i]);
+    }
+    ESP_LOGI(TAG, "Vitals 0x117 raw blob[15]: %s", hex);
+
     uint8_t track_id = payload[6];
     uint16_t hr_scaled = ((uint16_t) payload[7] << 8) | (uint16_t) payload[8];
     uint16_t br_scaled = ((uint16_t) payload[9] << 8) | (uint16_t) payload[10];
