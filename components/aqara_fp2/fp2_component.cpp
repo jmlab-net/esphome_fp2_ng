@@ -1983,7 +1983,10 @@ void FP2Component::api_set_zone_grid(int zone_id, std::string hex, JsonObject ro
     root["error"] = "zone_id not found";
     return;
   }
+  const bool was_covered = grid_has_coverage_(target->grid);
   target->grid = grid;
+  const bool is_covered = grid_has_coverage_(target->grid);
+
   std::vector<uint8_t> payload;
   payload.push_back(target->id);
   payload.insert(payload.end(), target->grid.begin(), target->grid.end());
@@ -1995,6 +1998,23 @@ void FP2Component::api_set_zone_grid(int zone_id, std::string hex, JsonObject ro
   }
   if (target->map_sensor != nullptr) {
     target->map_sensor->publish_state(grid_to_hex_card_format(target->grid));
+  }
+
+  // If the zone's coverage changed (empty→painted or painted→empty), its
+  // effective activation state changed too. Refresh ZONE_ACTIVATION_LIST
+  // so the radar stops (or starts) firing events for it.
+  if (was_covered != is_covered) {
+    enqueue_zone_activation_refresh_();
+    if (!is_covered) {
+      // Zone just went empty — radar will stop reporting. Clear stale state
+      // so HA doesn't linger on "presence on" from the last active read.
+      target->publish_presence(false);
+      target->publish_motion(false);
+      target->publish_zone_count(0);
+      if (target->posture_sensor != nullptr) {
+        target->posture_sensor->publish_state("none");
+      }
+    }
   }
   root["ok"] = true;
 }
@@ -2577,6 +2597,16 @@ void FP2Component::ota_transfer_task_entry_(void *arg) {
 // Reset / reboot helpers
 // ---------------------------------------------------------------------------
 
+// True if the zone's 40-byte grid has at least one bit set. Zones with
+// all-zero grids are effectively coverage-less — the radar fires
+// ZONE_PRESENCE events for them as if they matched the entire FOV,
+// causing every "empty placeholder" zone to mirror global presence.
+// Treat empty grids as "not activated" no matter the mode.
+static bool grid_has_coverage_(const GridMap &g) {
+  for (auto b : g) if (b != 0) return true;
+  return false;
+}
+
 void FP2Component::enqueue_zone_activation_refresh_() {
   // ZONE_ACTIVATION_LIST is a 32-byte bitmap where a non-zero byte at
   // index N activates zone N. The existing format writes the zone ID as
@@ -2584,15 +2614,15 @@ void FP2Component::enqueue_zone_activation_refresh_() {
   // protocol unchanged).
   std::vector<uint8_t> activations(32, 0);
   for (const auto &zone : zones_) {
-    if (zone->mode_code != 0) {
+    if (zone->mode_code != 0 && grid_has_coverage_(zone->grid)) {
       activations[zone->id] = zone->id;
     }
   }
   enqueue_command_blob2_(AttrId::ZONE_ACTIVATION_LIST, activations);
 
-  // Close/away enable only for active zones.
+  // Close/away enable only for truly-active zones (non-empty grid).
   for (const auto &zone : zones_) {
-    if (zone->mode_code != 0) {
+    if (zone->mode_code != 0 && grid_has_coverage_(zone->grid)) {
       enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE,
                        (uint16_t)((zone->id << 8) | 1));
     }
