@@ -32,6 +32,17 @@ static uint32_t diag_drops = 0;
 static uint32_t diag_init_at = 0;
 static bool diag_init_used_ready = false;
 
+// True if the zone's 40-byte grid has at least one bit set. Zones with
+// all-zero grids are coverage-less — the radar fires ZONE_PRESENCE
+// events for them as if they matched the entire FOV. We treat empty
+// grids as "not activated" no matter the mode. Defined at file scope
+// (before any FP2Component method uses it) so both
+// api_set_zone_grid and enqueue_zone_activation_refresh_ can call it.
+static bool grid_has_coverage_(const GridMap &g) {
+  for (auto b : g) if (b != 0) return true;
+  return false;
+}
+
 // CRC16-MODBUS
 static uint16_t crc16(const uint8_t *data, size_t len) {
   uint16_t crc = 0xFFFF;
@@ -2596,16 +2607,6 @@ void FP2Component::ota_transfer_task_entry_(void *arg) {
 // ---------------------------------------------------------------------------
 // Reset / reboot helpers
 // ---------------------------------------------------------------------------
-
-// True if the zone's 40-byte grid has at least one bit set. Zones with
-// all-zero grids are effectively coverage-less — the radar fires
-// ZONE_PRESENCE events for them as if they matched the entire FOV,
-// causing every "empty placeholder" zone to mirror global presence.
-// Treat empty grids as "not activated" no matter the mode.
-static bool grid_has_coverage_(const GridMap &g) {
-  for (auto b : g) if (b != 0) return true;
-  return false;
-}
 
 void FP2Component::enqueue_zone_activation_refresh_() {
   // ZONE_ACTIVATION_LIST is a 32-byte bitmap where a non-zero byte at
