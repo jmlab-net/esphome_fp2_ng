@@ -39,6 +39,7 @@ FP2Component = aqara_fp2_ns.class_("FP2Component", cg.Component, uart.UARTDevice
 FP2LocationSwitch = aqara_fp2_ns.class_("FP2LocationSwitch", switch.Switch)
 FP2OperatingModeSelect = aqara_fp2_ns.class_("FP2OperatingModeSelect", select.Select)
 FP2MountingPositionSelect = aqara_fp2_ns.class_("FP2MountingPositionSelect", select.Select)
+FP2ZoneModeSelect = aqara_fp2_ns.class_("FP2ZoneModeSelect", select.Select)
 FP2CalibrateEdgeButton = aqara_fp2_ns.class_("FP2CalibrateEdgeButton", button.Button)
 FP2CalibrateInterferenceButton = aqara_fp2_ns.class_("FP2CalibrateInterferenceButton", button.Button)
 FP2ClearEdgeButton = aqara_fp2_ns.class_("FP2ClearEdgeButton", button.Button)
@@ -107,6 +108,7 @@ CONF_FALL_DELAY_TIME = "fall_delay_time"
 CONF_FALLDOWN_BLIND_ZONE = "falldown_blind_zone"
 CONF_OPERATING_MODE = "operating_mode"
 CONF_MOUNTING_POSITION_SELECT = "mounting_position_select"
+CONF_MODE = "mode"
 CONF_POSTURE = "posture"
 CONF_SLEEP_STATE = "sleep_state"
 CONF_SLEEP_PRESENCE = "sleep_presence"
@@ -223,6 +225,10 @@ ZONE_SCHEMA = (
             ),
             cv.Optional(CONF_POSTURE): text_sensor_.text_sensor_schema(
                 icon="mdi:human",
+            ),
+            cv.Optional(CONF_MODE): select.select_schema(
+                FP2ZoneModeSelect,
+                icon="mdi:tune-vertical",
             ),
         }
     ).extend(ZONE_BASE_SCHEMA)
@@ -446,27 +452,45 @@ ZONE_SENSOR_MAP = {
 
 async def to_code(config):
     zones = []
+    # Zone mode-select registration is deferred to a second pass because it
+    # needs the main FP2Component var (for set_parent) which is created below.
+    zone_mode_confs = []
     if CONF_ZONES in config:
         for i, zone_conf in enumerate(config[CONF_ZONES]):
-            var = cg.new_Pvariable(
+            zone_id = i + 1
+            zone_var = cg.new_Pvariable(
                 zone_conf[CONF_ID],
-                i + 1,
+                zone_id,
                 zone_conf[CONF_GRID],
                 zone_conf[CONF_PRESENCE_SENSITIVITY],
             )
-            await cg.register_component(var, zone_conf)
+            await cg.register_component(zone_var, zone_conf)
 
             # Create sensors if provided
             for key, (new, funcName) in ZONE_SENSOR_MAP.items():
                 if key in zone_conf:
                     sens = await new(zone_conf[key])
-                    cg.add(getattr(var, funcName)(sens))
+                    cg.add(getattr(zone_var, funcName)(sens))
 
-            zones.append(var)
+            if CONF_MODE in zone_conf:
+                zone_mode_confs.append((zone_var, zone_id, zone_conf[CONF_MODE]))
+
+            zones.append(zone_var)
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await uart.register_uart_device(var, config)
+
+    # Per-zone mode select — needs both `var` (component) and zone_var for
+    # set_mode_select. Deferred from the zone-creation loop above.
+    for zone_var, zone_id, mode_conf in zone_mode_confs:
+        msel = await select.new_select(
+            mode_conf,
+            options=["Off", "Low", "Medium", "High"],
+        )
+        cg.add(msel.set_zone_id(zone_id))
+        cg.add(msel.set_parent(var))
+        cg.add(zone_var.set_mode_select(msel))
 
     cg.add(var.set_debug_mode(config[CONF_DEBUG_MODE]))
     cg.add(var.set_telnet_port(config[CONF_TELNET_PORT]))

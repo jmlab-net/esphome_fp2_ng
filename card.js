@@ -101,6 +101,10 @@ class AqaraFP2Card extends HTMLElement {
     this.updateStatusBanner();
     this.renderCanvas(data);
     this.updateInfoPanel(data);
+    // Zones panel reflects live HA mode-entity states — refresh while the
+    // user is editing. _renderZonesPanel short-circuits when editMode is
+    // null so this is a cheap no-op in the common read-only case.
+    if (this.editMode) this._renderZonesPanel();
   }
 
   // Prioritised status banner. Only the most urgent state is shown:
@@ -233,6 +237,7 @@ class AqaraFP2Card extends HTMLElement {
           <span class="fp2-dirty-dot" title="Unsaved edits"></span>
           <span class="fp2-edit-hint">click &amp; drag to paint / erase</span>
         </div>
+        <div class="fp2-zones-panel" hidden></div>
         <div class="fp2-content">
           <canvas id="fp2-canvas"></canvas>
         </div>
@@ -412,6 +417,43 @@ class AqaraFP2Card extends HTMLElement {
           color: var(--secondary-text-color);
           margin-left: auto;
         }
+        .fp2-zones-panel {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          padding: 8px;
+          margin-bottom: 8px;
+          background: var(--secondary-background-color);
+          border: 1px solid var(--divider-color);
+          border-radius: 8px;
+          font-size: 13px;
+        }
+        .fp2-zones-panel[hidden] { display: none; }
+        .fp2-zone-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .fp2-zone-row .fp2-zone-name {
+          min-width: 80px;
+          font-weight: 500;
+        }
+        .fp2-zone-row.inactive .fp2-zone-name { opacity: 0.5; }
+        .fp2-zone-row select {
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          border: 1px solid var(--divider-color);
+          border-radius: 6px;
+          padding: 3px 6px;
+          font-size: 12px;
+        }
+        .fp2-zone-row .fp2-zone-paint {
+          margin-left: auto;
+        }
+        .fp2-zone-row .fp2-btn.active {
+          background: var(--primary-color);
+          color: var(--text-primary-color);
+        }
         /* Canvas flash feedback on apply */
         #fp2-canvas {
           transition: box-shadow 0.2s ease;
@@ -533,18 +575,31 @@ class AqaraFP2Card extends HTMLElement {
     const zones = [];
     if (mapConfig.zones && Array.isArray(mapConfig.zones)) {
       mapConfig.zones.forEach((zc, i) => {
+        const zoneId = typeof zc.id === 'number' ? zc.id : (i + 1);
+        // Occupancy priority: presence_sensor (if configured), otherwise
+        // derive from people_count > 0 on the zone's count sensor. Count
+        // entity name follows the ESPHome naming convention.
         let occupancy = false;
         if (zc.presence_sensor) {
           occupancy = getState(`binary_sensor.${zc.presence_sensor}`) === "on";
+        } else {
+          const countState = getState(`sensor.${deviceName}_zone_${zoneId}_count`)
+                          ?? getState(`sensor.${deviceName}_zone_${zoneId}_people_count`);
+          const countNum = parseFloat(countState);
+          occupancy = !isNaN(countNum) && countNum > 0;
         }
+        // Runtime zone mode: Off / Low / Medium / High. When Off, don't
+        // render the zone outline at all — it's deactivated.
+        const modeState = getState(`select.${deviceName}_zone_${zoneId}_mode`);
+        const mode = modeState || 'Low';  // assume active if no select entity
         zones.push({
-          id: zc.presence_sensor || `zone_${i}`,
-          // Radar-level numeric zone id (what api_set_zone_grid expects). Fall
-          // back to i+1 for firmware predating the id field in get_map_config.
-          _rawId: typeof zc.id === 'number' ? zc.id : (i + 1),
-          name: zc.name || (zc.presence_sensor || `Zone ${i+1}`).replace(/^.*_/, '').replace(/_/g, ' '),
+          id: zc.presence_sensor || `zone_${zoneId}`,
+          _rawId: zoneId,
+          name: zc.name || (zc.presence_sensor || `Zone ${zoneId}`).replace(/^.*_/, '').replace(/_/g, ' '),
           map: parseGrid(zc.grid),
           occupancy,
+          mode,
+          active: mode !== 'Off',
         });
       });
     }
@@ -707,6 +762,9 @@ class AqaraFP2Card extends HTMLElement {
 
   drawDetectionZones(data, minX, maxX, minY, maxY, cellSize) {
     data.zones.forEach((zone) => {
+      // Skip inactive zones (mode == Off). Still in mapConfig because the
+      // grid is retained for reactivation, but shouldn't render.
+      if (zone.active === false) return;
       const occupied = zone.occupancy;
       const fillColor = occupied ? "rgba(66,165,245,0.35)" : "rgba(66,165,245,0.08)";
       const borderColor = occupied ? "rgba(33,150,243,0.9)" : "rgba(33,150,243,0.25)";
@@ -897,7 +955,7 @@ class AqaraFP2Card extends HTMLElement {
   }
 
   updateInfoPanel(data) {
-    const activeZones = data.zones.filter(z => z.occupancy);
+    const activeZones = data.zones.filter(z => z.active !== false && z.occupancy);
     const targetCount = data.targets ? data.targets.length : 0;
     const postureLabels = { 0: "Standing", 1: "Sitting", 2: "Lying" };
 
@@ -914,6 +972,7 @@ class AqaraFP2Card extends HTMLElement {
 
     // Zone status
     data.zones.forEach(z => {
+      if (z.active === false) return;  // hide inactive zones from the info chip row
       const cls = z.occupancy ? "zone-on" : "zone-off";
       const name = z.name || z.id;
       html += `<span class="fp2-stat"><span class="fp2-dot ${cls}"></span>${name}</span>`;
@@ -1032,6 +1091,72 @@ class AqaraFP2Card extends HTMLElement {
       applyBtn.disabled = !this._isDirty() || this._applyInFlight;
     }
     this._syncLayerSelect();
+    this._renderZonesPanel();
+  }
+
+  // Build the per-zone controls panel (visible only in edit mode). Each row:
+  //   name | mode dropdown | Paint button
+  // Changing the mode dropdown calls select.select_option on the HA-side
+  // mode entity. Paint sets editMode to {type:'zone', id} and loads the
+  // current grid into pendingGrid.
+  _renderZonesPanel() {
+    const panel = this.querySelector('.fp2-zones-panel');
+    if (!panel || !this._hass) return;
+    const zones = (this.mapConfig && this.mapConfig.zones) || [];
+    if (!this.editMode || zones.length === 0) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const deviceName = this.config.entity_prefix.replace(/^[^.]+\./, '');
+
+    const rowsHtml = zones.map((z, i) => {
+      const zoneId = typeof z.id === 'number' ? z.id : (i + 1);
+      const modeEntity = `select.${deviceName}_zone_${zoneId}_mode`;
+      const modeState = this._hass.states[modeEntity];
+      const mode = modeState ? modeState.state : 'Low';
+      const inactive = mode === 'Off';
+      const isPainting = this.editMode && this.editMode.type === 'zone' && this.editMode.id === zoneId;
+      const opts = ['Off', 'Low', 'Medium', 'High'].map(
+        o => `<option value="${o}"${o === mode ? ' selected' : ''}>${o}</option>`
+      ).join('');
+      return `
+        <div class="fp2-zone-row${inactive ? ' inactive' : ''}" data-zone-id="${zoneId}">
+          <span class="fp2-zone-name">Zone ${zoneId}</span>
+          <select class="fp2-zone-mode" data-entity="${modeEntity}">${opts}</select>
+          <button class="fp2-btn fp2-zone-paint${isPainting ? ' active' : ''}" data-zone-id="${zoneId}" title="Paint this zone's grid">
+            <ha-icon icon="mdi:brush"></ha-icon>
+          </button>
+        </div>`;
+    }).join('');
+    panel.innerHTML = rowsHtml;
+
+    // Wire listeners (innerHTML replaced; must rebind each render)
+    panel.querySelectorAll('.fp2-zone-mode').forEach(sel => {
+      sel.addEventListener('change', (e) => this._handleZoneModeChange(e));
+    });
+    panel.querySelectorAll('.fp2-zone-paint').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const zid = parseInt(e.currentTarget.getAttribute('data-zone-id'), 10);
+        this.setEditLayer(`zone:${zid}`);
+      });
+    });
+  }
+
+  async _handleZoneModeChange(e) {
+    const sel = e.currentTarget;
+    const entity = sel.getAttribute('data-entity');
+    const newValue = sel.value;
+    const cur = this._hass && this._hass.states[entity] && this._hass.states[entity].state;
+    if (cur === newValue) return;
+    try {
+      await this._hass.callService('select', 'select_option', {
+        entity_id: entity, option: newValue,
+      });
+    } catch (err) {
+      console.error('[FP2 Card] Zone mode change failed:', err);
+      sel.value = cur || 'Off';
+    }
   }
 
   _isDirty() {

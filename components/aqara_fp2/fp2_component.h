@@ -30,8 +30,16 @@ static const char *const TAG = "aqara_fp2";
 // 40-byte Grid Map
 using GridMap = std::array<uint8_t, 40>;
 
+// Forward-declared because FP2Zone holds a pointer to one.
+class FP2ZoneModeSelect;
+
 struct FP2Zone : public Component {
   FP2Zone(uint8_t zone_id, const GridMap grid, uint8_t sensitivity) : id(zone_id), grid(grid), sensitivity(sensitivity) {}
+
+  void set_mode_select(FP2ZoneModeSelect *sel);
+  void publish_zone_count(float count) {
+    if (zone_people_count_sensor != nullptr) zone_people_count_sensor->publish_state(count);
+  }
 
   void set_presence_sensor(binary_sensor::BinarySensor *sensor) {
     this->presence_sensor = sensor;
@@ -78,7 +86,13 @@ struct FP2Zone : public Component {
   esphome::sensor::Sensor *zone_people_count_sensor{nullptr};
   esphome::text_sensor::TextSensor *posture_sensor{nullptr};
   GridMap grid;
-  uint8_t sensitivity; // 1=Low, 2=Med, 3=High
+  uint8_t sensitivity; // 1=Low, 2=Med, 3=High (YAML-compiled default)
+  // Runtime mode — 0=Off (inactive), 1=Low, 2=Medium, 3=High. Off removes
+  // the zone from ZONE_ACTIVATION_LIST and forces count to 0 in HA. Any
+  // non-zero value activates with that sensitivity. Persisted via
+  // FP2Component::zone_mode_prefs_.
+  uint8_t mode_code{0};
+  FP2ZoneModeSelect *mode_select{nullptr};
 };
 
 class FP2Component;
@@ -246,6 +260,17 @@ public:
 protected:
   void control(const std::string &value) override;
   FP2Component *parent_{nullptr};
+};
+
+class FP2ZoneModeSelect : public select::Select {
+public:
+  void set_parent(FP2Component *parent) { parent_ = parent; }
+  void set_zone_id(uint8_t id) { zone_id_ = id; }
+
+protected:
+  void control(const std::string &value) override;
+  FP2Component *parent_{nullptr};
+  uint8_t zone_id_{0};
 };
 
 class FP2CalibrateEdgeButton : public button::Button {
@@ -573,6 +598,10 @@ public:
   void api_set_interference_grid(std::string hex, JsonObject root);
   void api_set_entry_exit_grid(std::string hex, JsonObject root);
   void api_set_zone_grid(int zone_id, std::string hex, JsonObject root);
+  // Zone mode: "Off" | "Low" | "Medium" | "High". "Off" takes the zone out
+  // of the ACTIVATION_LIST and pins its count to 0. Any level activates
+  // the slot with the matching sensitivity. Persisted to flash.
+  void set_zone_mode(int zone_id, const std::string &value);
 
 protected:
   // Parse 56 card-format hex chars into the internal 40-byte GridMap
@@ -655,8 +684,14 @@ protected:
   // zone_defaults_hash_pref_: if the user changes a zone's grid in YAML and
   // reflashes, saved runtime edits for that set of zones are discarded.
   ESPPreferenceObject edge_pref_, interference_pref_, exit_pref_;
-  std::vector<ESPPreferenceObject> zone_prefs_;
+  std::vector<ESPPreferenceObject> zone_prefs_;        // per-zone grid prefs
+  std::vector<ESPPreferenceObject> zone_mode_prefs_;   // per-zone mode prefs (uint8)
   ESPPreferenceObject zone_defaults_hash_pref_;
+  bool zone_modes_published_{false};
+
+  // Rebuild ZONE_ACTIVATION_LIST + ZONE_CLOSE_AWAY_ENABLE writes from
+  // current zone mode_codes. Called on mode change and at init.
+  void enqueue_zone_activation_refresh_();
   FP2CalibrateEdgeButton *calibrate_edge_button_{nullptr};
   FP2CalibrateInterferenceButton *calibrate_interference_button_{nullptr};
   FP2ClearEdgeButton *clear_edge_button_{nullptr};

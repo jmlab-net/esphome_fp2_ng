@@ -127,17 +127,36 @@ void FP2Component::setup() {
     }
     zone_prefs_.clear();
     zone_prefs_.reserve(zones_.size());
+    zone_mode_prefs_.clear();
+    zone_mode_prefs_.reserve(zones_.size());
     for (const auto &zone : zones_) {
-      std::string key = "fp2_zone_grid_" + std::to_string(zone->id);
-      auto pref = global_preferences->make_preference<GridMap>(fnv1_hash(key.c_str()));
+      std::string gkey = "fp2_zone_grid_" + std::to_string(zone->id);
+      auto gpref = global_preferences->make_preference<GridMap>(fnv1_hash(gkey.c_str()));
       if (hash_match) {
         GridMap saved;
-        if (pref.load(&saved)) {
+        if (gpref.load(&saved)) {
           zone->grid = saved;
           ESP_LOGI(TAG, "Restored zone %d grid from flash", zone->id);
         }
       }
-      zone_prefs_.push_back(pref);
+      zone_prefs_.push_back(gpref);
+
+      // Zone mode (Off/Low/Med/High). Not gated on zone_defaults_hash —
+      // mode is independent of grid identity. Default = compile-time
+      // sensitivity (1-3), which activates the zone with that level.
+      std::string mkey = "fp2_zone_mode_" + std::to_string(zone->id);
+      auto mpref = global_preferences->make_preference<uint8_t>(fnv1_hash(mkey.c_str()));
+      uint8_t saved_mode = 0xFF;
+      if (mpref.load(&saved_mode) && saved_mode <= 3) {
+        zone->mode_code = saved_mode;
+        ESP_LOGI(TAG, "Restored zone %d mode=%d from flash", zone->id, saved_mode);
+      } else {
+        // First boot: mirror YAML sensitivity (1=Low, 2=Med, 3=High).
+        // If sensitivity was compile-default (0 or out of range), fall back to Medium.
+        zone->mode_code = (zone->sensitivity >= 1 && zone->sensitivity <= 3)
+            ? zone->sensitivity : 2;
+      }
+      zone_mode_prefs_.push_back(mpref);
     }
   }
 
@@ -222,6 +241,19 @@ void FP2MountingPositionSelect::control(const std::string &value) {
     this->parent_->set_mounting_position_runtime(value);
   }
   this->publish_state(value);
+}
+
+void FP2ZoneModeSelect::control(const std::string &value) {
+  if (this->parent_ != nullptr) {
+    this->parent_->set_zone_mode(this->zone_id_, value);
+  }
+  this->publish_state(value);
+}
+
+// FP2Zone method implementations live here (after forward-declared class is
+// fully defined, so calls to mode_select methods compile cleanly).
+void FP2Zone::set_mode_select(FP2ZoneModeSelect *sel) {
+  this->mode_select = sel;
 }
 
 void FP2Component::set_operating_mode(const std::string &mode) {
@@ -426,6 +458,22 @@ void FP2Component::loop() {
       mounting_position_select_->publish_state(name);
       ESP_LOGI(TAG, "Published mounting position: %s", name);
       mounting_position_published_ = true;
+    }
+  }
+
+  // Per-zone mode select — publish once on API connect.
+  if (!zone_modes_published_) {
+    auto *server = api::global_api_server;
+    if (server != nullptr && server->is_connected()) {
+      static const char *NAMES[] = {"Off", "Low", "Medium", "High"};
+      bool all_done = true;
+      for (const auto &zone : zones_) {
+        if (zone->mode_select == nullptr) continue;
+        const uint8_t c = zone->mode_code <= 3 ? zone->mode_code : 0;
+        zone->mode_select->publish_state(NAMES[c]);
+      }
+      (void)all_done;
+      zone_modes_published_ = true;
     }
   }
 
@@ -637,32 +685,26 @@ void FP2Component::check_initialization_() {
       }
     }
 
-    // 3. Zones
-    std::vector<uint8_t> activations(32, 0);
+    // 3. Zones. Each slot is always sent (ZONE_MAP stores the grid even for
+    //    inactive zones so reactivation recovers the shape). Sensitivity +
+    //    ACTIVATION_LIST + CLOSE_AWAY_ENABLE only include zones whose
+    //    mode_code != 0 (Off).
     for (const auto &zone : zones_) {
-      // a. Send Zone Detect Setting (0x0114)
-      // Structure: [ZoneID] [40 byte Map]
+      // a. Zone grid (always — stored in radar even for inactive zones)
       std::vector<uint8_t> payload;
       payload.push_back(zone->id);
       payload.insert(payload.end(), zone->grid.begin(), zone->grid.end());
       enqueue_command_blob2_(AttrId::ZONE_MAP, payload);
 
-      // b. Send Sensitivity (0x0151)
-      // Structure: UINT16 (High=ID, Low=Sens)
-      uint16_t sens_val = (zone->id << 8) | (zone->sensitivity & 0xFF);
-      enqueue_command_(OpCode::WRITE, AttrId::ZONE_SENSITIVITY, sens_val);
-
-      activations[zone->id] = zone->id;
+      // b. Sensitivity — only for active zones. UINT16 (High=ID, Low=Sens).
+      if (zone->mode_code != 0) {
+        uint16_t sens_val = (zone->id << 8) | (zone->mode_code & 0xFF);
+        enqueue_command_(OpCode::WRITE, AttrId::ZONE_SENSITIVITY, sens_val);
+      }
     }
 
-    enqueue_command_blob2_(AttrId::ZONE_ACTIVATION_LIST, activations);
-
-    for (const auto &zone : zones_) {
-        // Close/Away Enable default?
-        // Trace: 0x0153 Zone Close Away Enable.
-        // We can enable it by default for now or add config options later.
-        enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t)((zone->id << 8) | 1));
-    }
+    // Build activation bitmap + enable close/away for active zones.
+    enqueue_zone_activation_refresh_();
 
     // HW_VERSION read removed — radar doesn't respond to READ requests for 0x0101,
     // and any READ in the 0x01xx range triggers scene mode 3 which clears sleep_report_enable.
@@ -2525,6 +2567,85 @@ void FP2Component::ota_transfer_task_entry_(void *arg) {
 // ---------------------------------------------------------------------------
 // Reset / reboot helpers
 // ---------------------------------------------------------------------------
+
+void FP2Component::enqueue_zone_activation_refresh_() {
+  // ZONE_ACTIVATION_LIST is a 32-byte bitmap where a non-zero byte at
+  // index N activates zone N. The existing format writes the zone ID as
+  // the byte value (matches what was working before — keeping the
+  // protocol unchanged).
+  std::vector<uint8_t> activations(32, 0);
+  for (const auto &zone : zones_) {
+    if (zone->mode_code != 0) {
+      activations[zone->id] = zone->id;
+    }
+  }
+  enqueue_command_blob2_(AttrId::ZONE_ACTIVATION_LIST, activations);
+
+  // Close/away enable only for active zones.
+  for (const auto &zone : zones_) {
+    if (zone->mode_code != 0) {
+      enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE,
+                       (uint16_t)((zone->id << 8) | 1));
+    }
+  }
+}
+
+void FP2Component::set_zone_mode(int zone_id, const std::string &value) {
+  uint8_t code;
+  if      (value == "Off")     code = 0;
+  else if (value == "Low")     code = 1;
+  else if (value == "Medium")  code = 2;
+  else if (value == "High")    code = 3;
+  else {
+    ESP_LOGW(TAG, "Unknown zone mode for zone %d: %s", zone_id, value.c_str());
+    return;
+  }
+  // Locate zone + its pref slot.
+  FP2Zone *target = nullptr;
+  size_t idx = 0;
+  for (size_t i = 0; i < zones_.size(); i++) {
+    if (zones_[i]->id == static_cast<uint8_t>(zone_id)) {
+      target = zones_[i];
+      idx = i;
+      break;
+    }
+  }
+  if (target == nullptr) {
+    ESP_LOGW(TAG, "set_zone_mode: zone_id %d not found", zone_id);
+    return;
+  }
+  if (target->mode_code == code) {
+    ESP_LOGI(TAG, "Zone %d mode unchanged (%s)", zone_id, value.c_str());
+    return;
+  }
+  ESP_LOGI(TAG, "Zone %d mode: %s (code=%d)", zone_id, value.c_str(), code);
+  target->mode_code = code;
+
+  // Persist.
+  if (idx < zone_mode_prefs_.size()) {
+    zone_mode_prefs_[idx].save(&target->mode_code);
+    global_preferences->sync();
+  }
+
+  // Push to radar: sensitivity if active, then refresh activation bitmap.
+  if (code != 0) {
+    uint16_t sens_val = (target->id << 8) | (code & 0xFF);
+    enqueue_command_(OpCode::WRITE, AttrId::ZONE_SENSITIVITY, sens_val);
+  }
+  enqueue_zone_activation_refresh_();
+
+  // If deactivated, force the count sensor to 0 and presence/motion off
+  // so HA reflects the new state immediately (radar stops reporting for
+  // inactive zones, so absent explicit publishes these would stale).
+  if (code == 0) {
+    target->publish_zone_count(0);
+    target->publish_presence(false);
+    target->publish_motion(false);
+    if (target->posture_sensor != nullptr) {
+      target->posture_sensor->publish_state("none");
+    }
+  }
+}
 
 void FP2Component::set_mounting_position_runtime(const std::string &value) {
   uint8_t code;
