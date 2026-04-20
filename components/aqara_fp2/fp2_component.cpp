@@ -1146,8 +1146,14 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 // State values: 0=motion start, even=active, odd=inactive
                 bool active = (state % 2 == 0);
                 z->publish_motion(active);
-                // Infer presence from motion — 0x0142 may not fire on boot
-                if (active) {
+                // Presence inference from motion is only a fallback for
+                // zones without a count sensor. When count is configured
+                // we use it as the single source of truth for presence
+                // (see ZONE_PEOPLE_NUMBER handler) — motion events can
+                // linger at zone edges, and if they kept pushing
+                // presence=true the zone's binary_sensor would stay
+                // stuck even after count dropped to 0.
+                if (active && z->zone_people_count_sensor == nullptr) {
                     z->publish_presence(true);
                 }
                 break;
@@ -1507,7 +1513,17 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 
             for (auto &z : zones_) {
                 if (z->id == zone_id) {
-                    z->publish_presence(state != 0);
+                    // When a count sensor is configured, count drives presence
+                    // (see ZONE_PEOPLE_NUMBER handler). We still honour an
+                    // explicit off event here, but ignore on events — the
+                    // radar's zone presence has multi-second hysteresis and
+                    // would otherwise pull presence back to on after count
+                    // already reported 0.
+                    if (z->zone_people_count_sensor != nullptr) {
+                        if (state == 0) z->publish_presence(false);
+                    } else {
+                        z->publish_presence(state != 0);
+                    }
                     break;
                 }
             }
