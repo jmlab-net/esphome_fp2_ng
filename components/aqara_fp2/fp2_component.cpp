@@ -432,6 +432,20 @@ void FP2Component::check_initialization_() {
     publish_radar_state_(reinit_done ? "Ready" : "Init sent");
 
     // 1. Basic Settings
+    //
+    // 2026-04-21: Ghidra deep-trace of fp2_aqara_fw1.bin confirmed stock ESP
+    // emits ZERO UART WRITEs on radar-ready (boot_init_main @ 0x400de62c,
+    // radar_ready_init_state @ 0x400e6350, after_radar_ready_poll @ 0x400e62b0
+    // only READ 0x0102/0x0116/0x0128 lazily). All WRITEs are cloud-forwarded
+    // ZCL writes from the Aqara app. Our 15+ WRITE init burst is our
+    // invention and may be destabilising FW3 sleep-mode DSS.
+    //
+    // emulate_stock=true skips this block so the radar keeps whatever config
+    // it has in flash (from prior Aqara-app pairing or prior WORK_MODE=N
+    // flash-save). Grids + zones still get sent below because our empirical
+    // testing found presence detection requires them even though stock
+    // doesn't send them.
+    if (!emulate_stock_) {
     enqueue_command_(OpCode::WRITE, AttrId::MONITOR_MODE, (uint8_t) 0);
     enqueue_command_(OpCode::WRITE, AttrId::LEFT_RIGHT_REVERSE,
                      (uint8_t)(left_right_reverse_ ? 2 : 0));
@@ -492,6 +506,7 @@ void FP2Component::check_initialization_() {
       enqueue_command_blob2_(AttrId::FALLDOWN_BLIND_ZONE,
           std::vector<uint8_t>(falldown_blind_zone_.begin(), falldown_blind_zone_.end()));
     }
+    }  // end if (!emulate_stock_)
 
     // 2. Grids — all three must be sent every init for the radar to produce
     //    presence/motion reports.  Send configured grids or empty defaults.
@@ -1863,6 +1878,7 @@ std::string FP2Component::grid_to_hex_card_format(const GridMap &grid) {
 void FP2Component::dump_config() {
   ESP_LOGCONFIG(TAG, "Aqara FP2 (built " __DATE__ " " __TIME__ "):");
   ESP_LOGCONFIG(TAG, "  Debug Mode: %s", debug_mode_ ? "ON" : "OFF");
+  ESP_LOGCONFIG(TAG, "  Emulate Stock (skip init burst): %s", emulate_stock_ ? "ON" : "OFF");
   ESP_LOGCONFIG(TAG, "  Mounting Position: %d", mounting_position_);
   ESP_LOGCONFIG(TAG, "  Zones: %d", zones_.size());
   if (reset_pin_ != nullptr) {

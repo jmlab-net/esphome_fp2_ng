@@ -337,6 +337,7 @@ public:
 
   // Configuration setters
   void set_debug_mode(bool val) { debug_mode_ = val; }
+  void set_emulate_stock(bool val) { emulate_stock_ = val; }
   void set_radar_reset_pin(GPIOPin *pin) { reset_pin_ = pin; }
   void set_mounting_position(uint8_t pos) { mounting_position_ = pos; }
   void set_left_right_reverse(bool val) { left_right_reverse_ = val; }
@@ -571,6 +572,7 @@ protected:
   bool init_done_{false};
   bool radar_ready_{false};  // Set when radar finishes booting (non-heartbeat frame received)
   bool debug_mode_{false};   // Verbose protocol logging
+  bool emulate_stock_{false}; // Skip init WRITE burst — stock ESP sends no WRITEs at init, only forwards cloud ZCL writes
   bool global_presence_active_{false};
   uint32_t last_heartbeat_millis_{0};
 
