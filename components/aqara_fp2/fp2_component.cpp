@@ -1355,33 +1355,48 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::SLEEP_DATA:
-        // Sleep-state metadata: BLOB2 of 12 bytes emitted by vitalsigns firmware.
-        // Previous IEEE-754-floats interpretation was INCORRECT. Ghidra of
-        // fp2_radar_vitalsigns.bin FUN_00006c84 (emits via FUN_0001c71c(5,0x159,6,...))
-        // shows 12 individual byte fields from ctx struct offsets +0x85..+0x90:
-        //   blob[0]  sleep track id / person_id
-        //   blob[1]  count
-        //   blob[2]  motion
-        //   blob[3]  sleep_stage (0 = idle)
-        //   blob[4]  reserved / posture
-        //   blob[5]  confidence  (≈ 100 at idle)
-        //   blob[6]  bed_state / event
-        //   blob[7]  reserved
-        //   blob[8]  secondary confidence (≈ 100 at idle)
-        //   blob[9..11]  reserved / terminator
-        // HR and BR are NOT in this blob — they're on SubID 0x0117 in mode 9
-        // (see handle_location_tracking_report_). Field semantics MEDIUM confidence.
+        // Sleep vitals: BLOB2 of 12 bytes emitted by FW3 vitalsigns firmware.
+        // Decompiled from fp2_radar_vitalsigns.bin vitals_hr_br_emitter @
+        // 0x00006c84 (emits via FUN_0001c71c(5, 0x0159, 6, ...) at 0x0000701a).
+        // Source struct at ctx+0x85..0x90; field layout:
+        //   blob[0]  tid (GTrack track id)
+        //   blob[1]  reserved (0)
+        //   blob[2]  reserved (0)
+        //   blob[3]  HR_bpm   (u8 direct, no scaling)
+        //   blob[4]  reserved (0)
+        //   blob[5]  HR_confidence (0..100; = 100 when event==0)
+        //   blob[6]  BR_bpm   (u8 direct, no scaling)
+        //   blob[7]  reserved (0)
+        //   blob[8]  BR_confidence (0..100; = 100 when event==0)
+        //   blob[9]  sleep_state_flag (from DAT_000023f0[idx])
+        //   blob[10] sleep_stage      (from DAT_000023f4)
+        //   blob[11] event / param_8
+        // 0x0159 is the PRIMARY vitals channel in FW3 — ungated, fires whenever
+        // a track is allocated. SubID 0x0117 is a secondary 100x-scaled channel
+        // for the Xiaomi app, requires LOCATION_REPORT_ENABLE=1 + target_count>0
+        // + a counter>15; it rarely fires for a stationary sleeper.
         if (payload.size() >= 5 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 12 && payload.size() >= 17) {
                 const uint8_t *b = &payload[5];
+                uint8_t tid    = b[0];
+                uint8_t hr_bpm = b[3];
+                uint8_t hr_cnf = b[5];
+                uint8_t br_bpm = b[6];
+                uint8_t br_cnf = b[8];
+                uint8_t sstate = b[9];
+                uint8_t sstage = b[10];
+                uint8_t evt    = b[11];
                 ESP_LOGI(TAG,
-                         "Sleep blob 0x159: tid=%u count=%u motion=%u stage=%u "
-                         "posture=%u conf=%u bed=%u conf2=%u "
-                         "(raw %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X)",
-                         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[8],
-                         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-                         b[8], b[9], b[10], b[11]);
+                         "Vitals 0x0159: tid=%u HR=%u bpm (conf=%u) BR=%u br/min (conf=%u) "
+                         "state=%u stage=%u evt=%u",
+                         tid, hr_bpm, hr_cnf, br_bpm, br_cnf, sstate, sstage, evt);
+                if (heart_rate_sensor_ != nullptr) {
+                    heart_rate_sensor_->publish_state(hr_bpm > 0 ? (float) hr_bpm : NAN);
+                }
+                if (respiration_rate_sensor_ != nullptr) {
+                    respiration_rate_sensor_->publish_state(br_bpm > 0 ? (float) br_bpm : NAN);
+                }
             } else {
                 ESP_LOGW(TAG, "Sleep blob 0x159 unexpected size %d bytes", blob_len);
             }
