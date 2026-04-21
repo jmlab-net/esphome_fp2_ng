@@ -774,19 +774,6 @@ void FP2Component::send_ack_(AttrId attr_id) {
   command_queue_.push_front(cmd);
 }
 
-void FP2Component::enqueue_read_(AttrId attr_id) {
-  FP2Command cmd;
-  cmd.type = OpCode::READ;  // opcode = 1
-  cmd.attr_id = attr_id;
-  cmd.retry_count = 0;
-
-  // READ payload is just [SubID_HI][SubID_LO] — no data-type, no data.
-  cmd.data.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
-  cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
-
-  command_queue_.push_back(cmd);
-}
-
 void FP2Component::send_reverse_response_(AttrId attr_id, uint8_t byte_val) {
   FP2Command cmd;
   cmd.type = OpCode::READ;  // Reverse Read Response uses READ opcode
