@@ -1111,10 +1111,26 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
     case AttrId::PRESENCE_DETECT:
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
-            publish_radar_state_(state != 0 ? "Presence" : "Ready");
+            bool present = (state != 0);
+
+            // Sleep-mode guard: FW3 emits 0x0104=0 for a stationary sleeper
+            // even while GTrack has an active track and 0x0159 vitals are
+            // still streaming. If we've seen a valid HR within the last
+            // ~30 s, treat a 0x0104=0 as stale and skip both the publish
+            // and the clear cascade — otherwise the cascade would wipe
+            // sleep_presence + HR + BR + HR-deviation every few seconds.
+            // Non-sleep modes and 0x0104!=0 events are unchanged.
+            if (sleep_mode_active_ && !present && last_vitals_millis_ != 0 &&
+                (millis() - last_vitals_millis_) < 30000U) {
+                ESP_LOGD(TAG, "0x0104=0 suppressed in sleep mode "
+                              "(last vitals %ums ago)",
+                         (unsigned)(millis() - last_vitals_millis_));
+                break;
+            }
+
+            publish_radar_state_(present ? "Presence" : "Ready");
             // Stock firmware: 0 = empty, non-zero = occupied
             // (NOT the same as motion which uses even/odd)
-            bool present = (state != 0);
             global_presence_active_ = present;
             if (global_presence_sensor_ != nullptr) {
                 global_presence_sensor_->publish_state(present);
@@ -1405,11 +1421,17 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                     respiration_rate_sensor_->publish_state(br_bpm > 0 ? (float) br_bpm : NAN);
                 }
                 // Valid vitals imply a tracked person in the bed → assert
-                // global presence. See SLEEP_PRESENCE case for rationale
-                // (one-way only; clearing is left to the 0x0104 cascade).
-                if (hr_bpm > 0 && global_presence_sensor_ != nullptr && !global_presence_active_) {
-                    global_presence_active_ = true;
-                    global_presence_sensor_->publish_state(true);
+                // global presence. See SLEEP_PRESENCE case for rationale.
+                // Also stamp last_vitals_millis_ so the 0x0104 presence-loss
+                // cascade can suppress itself while vitals are fresh (FW3
+                // emits 0x0104=0 for stationary sleepers, which would
+                // otherwise clobber global_presence and sleep_presence).
+                if (hr_bpm > 0) {
+                    last_vitals_millis_ = millis();
+                    if (global_presence_sensor_ != nullptr && !global_presence_active_) {
+                        global_presence_active_ = true;
+                        global_presence_sensor_->publish_state(true);
+                    }
                 }
 
                 // Heart rate deviation: rolling population std dev over the

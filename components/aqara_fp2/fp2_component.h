@@ -575,6 +575,7 @@ protected:
   bool emulate_stock_{false}; // Skip init WRITE burst — stock ESP sends no WRITEs at init, only forwards cloud ZCL writes
   bool global_presence_active_{false};
   uint32_t last_heartbeat_millis_{0};
+  uint32_t last_vitals_millis_{0};   // millis() of last valid 0x0159 HR frame
 
   // Configuration State
   uint8_t mounting_position_{0x01}; // Default Wall
