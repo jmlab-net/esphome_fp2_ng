@@ -65,6 +65,7 @@ CONF_SENSITIVITY = "sensitivity"
 
 # New Options
 CONF_DEBUG_MODE = "debug_mode"
+CONF_EMULATE_STOCK = "emulate_stock"
 CONF_RADAR_RESET_PIN = "radar_reset_pin"
 CONF_RADAR_FIRMWARE_URL = "radar_firmware_url"
 CONF_PRESENCE_SENSITIVITY = "presence_sensitivity"
@@ -241,6 +242,7 @@ CONFIG_SCHEMA = (
             cv.Required("accel"): cv.use_id(AqaraFP2Accel),
 
             cv.Optional(CONF_DEBUG_MODE, default=False): cv.boolean,
+            cv.Optional(CONF_EMULATE_STOCK, default=False): cv.boolean,
             cv.Optional(CONF_RADAR_RESET_PIN): pins.gpio_output_pin_schema,
             cv.Optional(CONF_RADAR_FIRMWARE_URL): cv.url,
             cv.Optional(CONF_MOUNTING_POSITION, default="left_corner"): cv.enum(
@@ -493,6 +495,7 @@ async def to_code(config):
         cg.add(zone_var.set_mode_select(msel))
 
     cg.add(var.set_debug_mode(config[CONF_DEBUG_MODE]))
+    cg.add(var.set_emulate_stock(config[CONF_EMULATE_STOCK]))
     cg.add(var.set_telnet_port(config[CONF_TELNET_PORT]))
 
     if CONF_RADAR_FIRMWARE_URL in config:

@@ -371,6 +371,7 @@ public:
 
   // Configuration setters
   void set_debug_mode(bool val) { debug_mode_ = val; }
+  void set_emulate_stock(bool val) { emulate_stock_ = val; }
   void set_radar_reset_pin(GPIOPin *pin) { reset_pin_ = pin; }
   void set_mounting_position(uint8_t pos) { mounting_position_ = pos; }
   void set_left_right_reverse(bool val) { left_right_reverse_ = val; }
@@ -635,6 +636,7 @@ protected:
   bool init_done_{false};
   bool radar_ready_{false};  // Set when radar finishes booting (non-heartbeat frame received)
   bool debug_mode_{false};   // Verbose protocol logging
+  bool emulate_stock_{false}; // Skip init WRITE burst — stock ESP sends no WRITEs at init, only forwards cloud ZCL writes
   bool global_presence_active_{false};
   uint32_t last_heartbeat_millis_{0};
 
@@ -673,6 +675,10 @@ protected:
   FP2OperatingModeSelect *operating_mode_select_{nullptr};
   FP2MountingPositionSelect *mounting_position_select_{nullptr};
   bool sleep_mode_active_{false};
+  // Incrementing u8 counter sent as the value of WRITE 0x0203 on every
+  // heartbeat while in sleep mode. Mirrors stock ESP32 behavior at
+  // heartbeat_config_sync (fp2_aqara_fw1.bin @ 0x400decd4).
+  uint8_t zone_config_sync_counter_{0};
   ESPPreferenceObject operating_mode_pref_;
   ESPPreferenceObject mounting_position_pref_;
   bool operating_mode_published_{false};
@@ -810,10 +816,19 @@ protected:
 
   void enqueue_command_(OpCode type, AttrId attr_id, uint8_t byte_val);
   void enqueue_command_(OpCode type, AttrId attr_id, uint16_t word_val);
+  void enqueue_command_(OpCode type, AttrId attr_id, uint32_t dword_val);
   void enqueue_command_(OpCode type, AttrId attr_id, bool bool_val);
+  // Zero-payload READ request (wire opcode 0x01, named OpCode::RESPONSE
+  // in our enum due to historical naming — it's what stock sends to the
+  // radar as "give me the current value of SubID X"). Stock ESP uses this
+  // as a "subscribe" pattern: lazy-read helpers FUN_400ded60/deda4/dedec
+  // in fp2_aqara_fw1.bin fire READ 0x0102/0x0116/0x0128 when the cloud-
+  // channel cached value is zero. Required to kick the radar's report
+  // emitter into "subscribed" mode on 0x0128 temperature and possibly
+  // 0x0117 vitals/targets.
+  void enqueue_read_(AttrId attr_id);
   void enqueue_command_blob2_(AttrId attr_id,
                               const std::vector<uint8_t> &blob_content);
-  void enqueue_read_(AttrId attr_id);
   void send_reverse_response_(AttrId attr_id, uint8_t byte_val);
 
   // Radar OTA (XMODEM-1K)

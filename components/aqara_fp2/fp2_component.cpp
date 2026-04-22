@@ -268,17 +268,28 @@ void FP2Zone::set_mode_select(FP2ZoneModeSelect *sel) {
 }
 
 void FP2Component::set_operating_mode(const std::string &mode) {
-  // All 4 modes use the same radar firmware. Mode is changed by:
-  // 1. Setting SLEEP_REPORT_ENABLE (needed for mode 9)
-  // 2. Writing WORK_MODE (SubID 0x0116) which triggers FUN_00013d9c:
-  //    flash save + radar self-restart
-  // 3. Resetting our init state for re-init after restart
+  // Scene modes map to distinct radar firmware images that WORK_MODE selects:
+  //   3 = Zone Detection  → FW1 (mcu_ota group 0, stripped build paths)
+  //   8 = Fall Detection  → FW2 3d_people_counting (mcu_ota group 1)
+  //   9 = Sleep / Vitals  → FW3 vital signs (mcu_ota group 2)
   //
-  // Scene modes confirmed via Ghidra:
-  //   3 = Zone Detection (wall, multi-person, Config A chirp)
-  //   8 = Fall Detection (ceiling, single person, Config B chirp)
-  //   9 = Sleep Monitoring (bedside, single person, Config B chirp)
-  //   Fall + Positioning = mode 8 with location reporting enabled
+  // 2026-04-20 correction (superseding earlier 2026-04-19 reversal):
+  // Full Ghidra re-analysis (aggressive analyzers + gap force-disassembly)
+  // recovered 1152 previously-hidden functions in FW3 including the attribute
+  // WRITE dispatcher FUN_00009e80. It has a case for SubID 0x0112
+  // (LOCATION_REPORT_ENABLE) that calls the handler at 0x2c9c8, which writes
+  // config+0xb8 = 1 — opening the HR/BR emit gate in FUN_00006c84.
+  //
+  // So FW3 IS functional and the standard Aqara activation path works:
+  //   WRITE 0x0112 = 1   (sent during init, fp2_component.cpp:427)
+  //   WRITE 0x0116 = 9   (triggers radar flash save + restart into FW3)
+  //
+  // The earlier symptom ("0 HR/BR frames overnight in mode 9") was likely
+  // caused by sleep-zone params not being in flash when FW3 booted — DSS had
+  // no bed region to track, so target_count stayed 0 and the second emit gate
+  // (target_count != 0) suppressed output. Sending SLEEP_MOUNT_POSITION /
+  // SLEEP_ZONE_SIZE / SLEEP_BED_HEIGHT / OVERHEAD_HEIGHT before the WORK_MODE
+  // write lets them ride along in the flash-save-on-restart.
 
   uint8_t scene_mode = 3;
   bool sleep = false;
@@ -309,23 +320,31 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   global_preferences->sync();  // Flush to flash immediately
   ESP_LOGI(TAG, "Saved operating mode index=%d to flash", mode_index);
 
-  // For sleep mode: send zone params BEFORE enabling sleep.
-  // While still in mode 3, 0x01xx WRITEs are safe (mode 3→3 = no transition).
-  // The params are stored in radar RAM and applied before the restart.
-  // After restart they're lost (RAM-only), but were already processed.
-  // This matches the stock Aqara firmware sequence.
+  // For sleep mode: send zone params BEFORE WORK_MODE=9 triggers the restart.
+  // Each attribute handler writes to radar RAM. The WORK_MODE handler
+  // (FUN_00016e18) then calls flash_write functions (FUN_00026b68 etc.) which
+  // save the full 3000-byte config blob to flash at 0x31000 — including
+  // sleep_mount_position (+0xb94), sleep_zone_size (+0xb98), sleep_bed_height
+  // (+0xb92), and overhead_height (+0xbb0) — before the radar restarts.
+  //
+  // After restart FW3's FUN_00002c50 reads the blob back from flash (CRC
+  // checked) and restores these fields into RAM, giving DSS the bed region
+  // info it needs. Without these in flash, FW3 would boot with default
+  // (zero-width) sleep zone and DSS would never lock onto a target — which
+  // is likely what produced the earlier "0 HR/BR frames" symptom.
+  //
+  // The ESP init also re-sends these params after the restart (see below),
+  // giving belt-and-braces coverage.
   if (sleep) {
     if (sleep_mount_position_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) sleep_mount_position_);
     }
     if (sleep_zone_size_ > 0) {
-      std::vector<uint8_t> szs = {
-        (uint8_t)((sleep_zone_size_ >> 24) & 0xFF),
-        (uint8_t)((sleep_zone_size_ >> 16) & 0xFF),
-        (uint8_t)((sleep_zone_size_ >> 8) & 0xFF),
-        (uint8_t)(sleep_zone_size_ & 0xFF)
-      };
-      enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs);
+      // UINT32 (type 0x02), not BLOB2 — stock cloud handler
+      // FUN_400e247c writes as U32. BLOB2 (type 0x06) has a different
+      // wire format the radar's attribute dispatcher may not route to the
+      // same handler.
+      enqueue_command_(OpCode::WRITE, AttrId::SLEEP_ZONE_SIZE, sleep_zone_size_);
     }
     if (sleep_bed_height_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::SLEEP_BED_HEIGHT, sleep_bed_height_);
@@ -335,8 +354,36 @@ void FP2Component::set_operating_mode(const std::string &mode) {
     }
   }
 
-  // Write sleep enable flag to radar RAM
-  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);
+  // LOCATION_REPORT_ENABLE=1 opens FW3's +0xb8 emit gate for SubID 0x0117
+  // (HR/BR payload). With emulate_stock=true the init burst no longer sets
+  // this, so we must set it explicitly before WORK_MODE=9 triggers the
+  // flash save. Without it, FW3 boots with +0xb8=0 and 0x0117 never emits —
+  // the driver's HR/BR sensors stay NAN even though 0x0159 sleep-staging
+  // frames (which aren't gated on +0xb8) do arrive.
+  if (sleep) {
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);  // BOOL
+  }
+
+  // Write sleep enable flag to radar RAM.
+  //
+  // 2026-04-21 CORRECTION (supersedes earlier "value=9" comment):
+  // The stock Aqara ESP32 firmware validates SLEEP_REPORT_ENABLE <2 before
+  // sending to the radar (verified via Ghidra decompile of the cloud-write
+  // handler at fp2_aqara_fw1.bin FUN_400e3399 @ 0x400e3751). Only 0 or 1 are
+  // accepted. And the stock heartbeat sync gate at `radar_sw_version`
+  // (0x400e4f28) compares `sleep_report_enable == 1` — meaning it uses this
+  // flag as a bool, not as a sentinel value 9.
+  //
+  // The SBL firmware selector does accept `byte[4] == 1` as a FW3 trigger
+  // alongside `byte[2] == 9`, so sending SLEEP_REPORT_ENABLE=1 while FW1 is
+  // running causes FW1 to flash-save byte[4]=1, and the next radar boot
+  // loads FW3. Sending value 9 via this SubID is not what stock does and
+  // causes the radar to reject/clamp it.
+  // Must encode as BOOL (data_type 0x04), not UINT8 (0x00). Stock's cloud
+  // handler writes this with data_type 4 (FUN_400e28f0 @ 0x400e2a0b sets
+  // uStack_36 = 4 before FUN_400e7e20 frame-build). Sending as UINT8 gets
+  // rejected by the radar's attribute dispatcher with a type mismatch.
+  enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);  // BOOL
   // WORK_MODE write triggers flash save + radar self-restart
   enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, scene_mode);
 
@@ -569,18 +616,12 @@ void FP2Component::check_initialization_() {
   if (last_heartbeat_millis_ == 0)
     return;
 
-  // NOTE: earlier versions early-returned here for sleep_mode_active_ on
-  // the hypothesis that 0x01xx WRITEs in mode 9 would reset scene mode
-  // back to 3. Our Ghidra pass of FW3 (vitalsigns) and the stock ESP
-  // firmware never verified that — and empirical probes showed FW3's
-  // detection pipeline is DORMANT in mode 9 unless configured. The
-  // Aqara app + ALink spec confirm there's no dedicated "sleep learn"
-  // command; sleep monitoring is supposed to auto-start when FW3 sees
-  // a stable target. If FW3 isn't getting the config it needs (grids,
-  // presence/motion enable, location-report enable, zone params), it
-  // can't detect anything. So we now send the FULL init in sleep mode
-  // too and trust that the 0x02xx-range 0x0203 sync at the end of the
-  // sequence keeps sleep_report_enable intact.
+  // Full init runs in every mode. FW3 (sleep/vitals) needs the same set of
+  // attributes FW1/FW2 need: grids, presence/motion enable, LOCATION_REPORT_ENABLE
+  // (this is the attr that opens the HR/BR emit gate — config+0xb8 in FW3
+  // via dispatcher FUN_00009e80 → handler 0x2c9c8), plus sleep-zone params for
+  // FW3 to locate the bed region. Without these FW3 boots with empty config
+  // and DSS never locks onto a target, so vitals frames never emit.
 
   diag_init_at = millis();
   diag_init_used_ready = reinit_done;
@@ -590,6 +631,20 @@ void FP2Component::check_initialization_() {
     publish_radar_state_(reinit_done ? "Ready" : "Init sent");
 
     // 1. Basic Settings
+    //
+    // 2026-04-21: Ghidra deep-trace of fp2_aqara_fw1.bin confirmed stock ESP
+    // emits ZERO UART WRITEs on radar-ready (boot_init_main @ 0x400de62c,
+    // radar_ready_init_state @ 0x400e6350, after_radar_ready_poll @ 0x400e62b0
+    // only READ 0x0102/0x0116/0x0128 lazily). All WRITEs are cloud-forwarded
+    // ZCL writes from the Aqara app. Our 15+ WRITE init burst is our
+    // invention and may be destabilising FW3 sleep-mode DSS.
+    //
+    // emulate_stock=true skips this block so the radar keeps whatever config
+    // it has in flash (from prior Aqara-app pairing or prior WORK_MODE=N
+    // flash-save). Grids + zones still get sent below because our empirical
+    // testing found presence detection requires them even though stock
+    // doesn't send them.
+    if (!emulate_stock_) {
     enqueue_command_(OpCode::WRITE, AttrId::MONITOR_MODE, (uint8_t) 0);
     enqueue_command_(OpCode::WRITE, AttrId::LEFT_RIGHT_REVERSE,
                      (uint8_t)(left_right_reverse_ ? 2 : 0));
@@ -606,7 +661,9 @@ void FP2Component::check_initialization_() {
     // Location reporting must stay enabled at the radar level — people counting
     // depends on it internally. The Report Targets switch controls whether
     // target data is published to the text sensor, not whether the radar tracks.
-    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, (uint8_t) 1);
+    // BOOL (type 0x04), not UINT8 — matches stock cloud handler at
+    // FUN_400e4e7c which sets uStack_36=4. Sending as UINT8 gets rejected.
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);  // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t)(dwell_time_enable_ ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE,
@@ -648,6 +705,7 @@ void FP2Component::check_initialization_() {
       enqueue_command_blob2_(AttrId::FALLDOWN_BLIND_ZONE,
           std::vector<uint8_t>(falldown_blind_zone_.begin(), falldown_blind_zone_.end()));
     }
+    }  // end if (!emulate_stock_)
 
     // 2. Grids — all three must be sent every init for the radar to produce
     //    presence/motion reports.  Send configured grids or empty defaults.
@@ -787,6 +845,29 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, (AttrId) 0x0203, (uint8_t) 0);
     publish_radar_state_("Sleep");
   }
+
+  // Stock ESP's lazy-read sequence: on first cloud-channel activation after
+  // a radar restart, stock issues READs for 0x0102/0x0116/0x0128 if its
+  // cached values are zero (FUN_400ded60/deda4/dedec @ fp2_aqara_fw1.bin).
+  // On a fresh FW3 boot the caches are zero so all three fire. In TI mmwave
+  // SDK protocols, READing a report SubID can register the ESP as a
+  // subscriber for that periodic report — without it, the radar may never
+  // emit 0x0128 temperature, and (hypothesis) the same gating may apply to
+  // the 0x0117 target/vitals stream. Our driver has never issued a READ;
+  // this is the single biggest protocol-level difference vs stock found in
+  // the 2026-04-21 deep-trace agent analysis.
+  //
+  // Send these AFTER all WRITE-based config commands so the radar has its
+  // state set up before we ask for status.
+  enqueue_read_(AttrId::RADAR_SW_VERSION);  // 0x0102
+  enqueue_read_((AttrId) 0x0116);           // WORK_MODE
+  enqueue_read_((AttrId) 0x0128);           // RADAR_TEMPERATURE
+  // Diagnostic readbacks of critical gating bytes. Log lines [READBACK]
+  // will show the actual value the radar has stored — lets us verify that
+  // our WRITEs for these landed and the emit gate is open. If 0x0112 reads
+  // back 0, the LOCATION_REPORT_ENABLE WRITE was rejected or not routed.
+  enqueue_read_((AttrId) 0x0112);           // LOCATION_REPORT_ENABLE (emit gate)
+  enqueue_read_((AttrId) 0x0156);           // SLEEP_REPORT_ENABLE
 
   ESP_LOGI(TAG, "Init complete: %d commands queued (uptime=%u ms)",
            (int)command_queue_.size(), millis());
@@ -1044,6 +1125,27 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
     case OpCode::RESPONSE:
       handle_response_(attr_id, payload);
       break;
+    case OpCode::READ:
+      // Wire opcode 0x04 = radar's response to our opcode-0x01 READ request.
+      // Payload: [SubID 2B][dtype 1B][value N bytes].
+      // Log the read-back value as a diagnostic so we can verify what the
+      // radar actually has in its config for critical bytes like
+      // LOCATION_REPORT_ENABLE (0x0112) and SLEEP_REPORT_ENABLE (0x0156).
+      if (payload.size() >= 4) {
+        uint8_t dtype = payload[2];
+        std::string val_str;
+        char buf[16];
+        for (size_t i = 3; i < payload.size() && i < 11; i++) {
+          snprintf(buf, sizeof(buf), "%02X ", payload[i]);
+          val_str += buf;
+        }
+        ESP_LOGI(TAG, "[READBACK] SubID=0x%04X dtype=0x%02X value=[ %s]",
+                 (uint16_t) attr_id, dtype, val_str.c_str());
+      } else {
+        ESP_LOGW(TAG, "[READBACK] SubID=0x%04X short payload (len=%d)",
+                 (uint16_t) attr_id, (int) payload.size());
+      }
+      break;
     default:
       ESP_LOGW(TAG, "Unhandled OpCode: %d", type);
       break;
@@ -1089,6 +1191,33 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                  millis(), init_done_, radar_ready_);
       }
       last_heartbeat_millis_ = millis();
+
+      // Heartbeat-driven config sync for sleep mode.
+      //
+      // Stock ESP32 fires WRITE 0x0203 on every incoming radar heartbeat
+      // (0x0102) when sleep_report_enable==1 OR work_mode==9, per
+      // radar_sw_version @ 0x400e4f28 + heartbeat_config_sync @ 0x400decd4
+      // in fp2_aqara_fw1.bin. The payload is a u8 config-version counter
+      // from persistent NVS (Ram400d0e2c+0x257). Missing this keep-alive
+      // appears to leave the radar's sleep state machine stuck after
+      // WORK_MODE=9 — the radar accepts config but never kicks the DSS
+      // pipeline into data-emitting mode.
+      //
+      // The counter value doesn't seem to matter to the radar (it just
+      // needs to see the write). We use a simple incrementing byte.
+      if (sleep_mode_active_ && init_done_) {
+        enqueue_command_(OpCode::WRITE, (AttrId) 0x0203,
+                         (uint8_t) zone_config_sync_counter_++);
+        // Periodic READ probe for diagnostic: every 30 heartbeats (~30s)
+        // read back LOCATION_REPORT_ENABLE (0x0112) and SLEEP_REPORT_ENABLE
+        // (0x0156) so the [READBACK] log lines appear in any log capture
+        // window, not just during the init burst. Low overhead.
+        if ((zone_config_sync_counter_ % 30) == 0) {
+          enqueue_read_((AttrId) 0x0112);
+          enqueue_read_((AttrId) 0x0156);
+        }
+      }
+
       if (payload.size() >= 4) {
         if (payload[2] == 0x00) {
           // Version byte is a build number (e.g. 99 = latest known fw)
@@ -1437,33 +1566,48 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         break;
 
     case AttrId::SLEEP_DATA:
-        // Sleep-state metadata: BLOB2 of 12 bytes emitted by vitalsigns firmware.
-        // Previous IEEE-754-floats interpretation was INCORRECT. Ghidra of
-        // fp2_radar_vitalsigns.bin FUN_00006c84 (emits via FUN_0001c71c(5,0x159,6,...))
-        // shows 12 individual byte fields from ctx struct offsets +0x85..+0x90:
-        //   blob[0]  sleep track id / person_id
-        //   blob[1]  count
-        //   blob[2]  motion
-        //   blob[3]  sleep_stage (0 = idle)
-        //   blob[4]  reserved / posture
-        //   blob[5]  confidence  (≈ 100 at idle)
-        //   blob[6]  bed_state / event
-        //   blob[7]  reserved
-        //   blob[8]  secondary confidence (≈ 100 at idle)
-        //   blob[9..11]  reserved / terminator
-        // HR and BR are NOT in this blob — they're on SubID 0x0117 in mode 9
-        // (see handle_location_tracking_report_). Field semantics MEDIUM confidence.
+        // Sleep vitals: BLOB2 of 12 bytes emitted by FW3 vitalsigns firmware.
+        // Decompiled from fp2_radar_vitalsigns.bin vitals_hr_br_emitter @
+        // 0x00006c84 (emits via FUN_0001c71c(5, 0x0159, 6, ...) at 0x0000701a).
+        // Source struct at ctx+0x85..0x90; field layout:
+        //   blob[0]  tid (GTrack track id)
+        //   blob[1]  reserved (0)
+        //   blob[2]  reserved (0)
+        //   blob[3]  HR_bpm   (u8 direct, no scaling)
+        //   blob[4]  reserved (0)
+        //   blob[5]  HR_confidence (0..100; = 100 when event==0)
+        //   blob[6]  BR_bpm   (u8 direct, no scaling)
+        //   blob[7]  reserved (0)
+        //   blob[8]  BR_confidence (0..100; = 100 when event==0)
+        //   blob[9]  sleep_state_flag (from DAT_000023f0[idx])
+        //   blob[10] sleep_stage      (from DAT_000023f4)
+        //   blob[11] event / param_8
+        // 0x0159 is the PRIMARY vitals channel in FW3 — ungated, fires whenever
+        // a track is allocated. SubID 0x0117 is a secondary 100x-scaled channel
+        // for the Xiaomi app, requires LOCATION_REPORT_ENABLE=1 + target_count>0
+        // + a counter>15; it rarely fires for a stationary sleeper.
         if (payload.size() >= 5 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 12 && payload.size() >= 17) {
                 const uint8_t *b = &payload[5];
+                uint8_t tid    = b[0];
+                uint8_t hr_bpm = b[3];
+                uint8_t hr_cnf = b[5];
+                uint8_t br_bpm = b[6];
+                uint8_t br_cnf = b[8];
+                uint8_t sstate = b[9];
+                uint8_t sstage = b[10];
+                uint8_t evt    = b[11];
                 ESP_LOGI(TAG,
-                         "Sleep blob 0x159: tid=%u count=%u motion=%u stage=%u "
-                         "posture=%u conf=%u bed=%u conf2=%u "
-                         "(raw %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X)",
-                         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[8],
-                         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-                         b[8], b[9], b[10], b[11]);
+                         "Vitals 0x0159: tid=%u HR=%u bpm (conf=%u) BR=%u br/min (conf=%u) "
+                         "state=%u stage=%u evt=%u",
+                         tid, hr_bpm, hr_cnf, br_bpm, br_cnf, sstate, sstage, evt);
+                if (heart_rate_sensor_ != nullptr) {
+                    heart_rate_sensor_->publish_state(hr_bpm > 0 ? (float) hr_bpm : NAN);
+                }
+                if (respiration_rate_sensor_ != nullptr) {
+                    respiration_rate_sensor_->publish_state(br_bpm > 0 ? (float) br_bpm : NAN);
+                }
             } else {
                 ESP_LOGW(TAG, "Sleep blob 0x159 unexpected size %d bytes", blob_len);
             }
@@ -1652,34 +1796,63 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   if (payload.size() < 6 || payload[2] != 0x06) {
     return;
   }
-  uint16_t blob_len = ((uint16_t) payload[3] << 8) | (uint16_t) payload[4];
-
-  // In work_mode=9 (sleep/vital signs firmware), the same SubID 0x0117 carries
-  // heart-rate and respiration-rate data instead of target tracking. Confirmed
-  // via Ghidra of fp2_radar_vitalsigns.bin FUN_00006c84:
-  //   blob[0]       = 1 (header)
-  //   blob[1]       = track_id
-  //   blob[2..3]    = round(HR_bpm     * 100) as uint16 big-endian
-  //   blob[4..5]    = round(BR_per_min * 100) as uint16 big-endian
-  //   blob[6..14]   = zero padding
-  // Scaling constant 100.0f verified as 0x42C80000 in the firmware.
-  if (sleep_mode_active_ && blob_len == 15 && payload.size() >= 20) {
-    uint8_t track_id = payload[6];
-    uint16_t hr_scaled = ((uint16_t) payload[7] << 8) | (uint16_t) payload[8];
-    uint16_t br_scaled = ((uint16_t) payload[9] << 8) | (uint16_t) payload[10];
-    float hr = hr_scaled / 100.0f;
-    float br = br_scaled / 100.0f;
-    ESP_LOGI(TAG, "Vitals 0x117: tid=%u HR=%.1f bpm BR=%.1f br/min", track_id, hr, br);
-    if (heart_rate_sensor_ != nullptr && hr_scaled > 0) {
-      heart_rate_sensor_->publish_state(hr);
+  // SubID 0x0117 has the SAME 14-byte-per-target wire format but DIFFERENT
+  // semantics depending on which radar firmware is booted:
+  //
+  //   FW1 (zone, mode 3) and FW2 (3d_people_counting, mode 8):
+  //     blob[0]          target_count
+  //     per target, 14 bytes:
+  //       [0]            track_id  (u8)
+  //       [1..2]         X         (u16 BE, cm)
+  //       [3..4]         Y         (u16 BE, cm; clamped >=0 in mode 3)
+  //       [5..6]         reserved (0)
+  //       [7..8]         velocity  (u16 BE, cm/s)
+  //       [9..10]        SNR       (u16 BE)
+  //       [11..13]       status flags
+  //     Emitter: FUN_0000cdbc in fp2_radar_dsp.bin (FW2) and
+  //              FUN_00012f4c in fp2_radar_mss.bin (FW1).
+  //
+  //   FW3 (vital signs, mode 9) via FUN_00006c84:
+  //     blob[0] = 1 (always single-target vitals frame)
+  //     per target, 14 bytes:
+  //       [0]            track_id  (u8)
+  //       [1..2]         HR_bpm * 100  (u16 BE)
+  //       [3..4]         BR_bpm * 100  (u16 BE)
+  //       [5..13]        zeros
+  //     Emitter: FUN_00006c84 @ 0x6c84 in fp2_radar_vitalsigns.bin.
+  //     Gated on config+0xb8 == 1 (set by LOCATION_REPORT_ENABLE attr 0x0112).
+  //
+  // When sleep_mode_active_ we route to the vitals decode; otherwise to the
+  // tracking decode.
+  if (this->sleep_mode_active_) {
+    // Diagnostic: dump the raw blob so we can see what FW3 is actually sending.
+    if (debug_mode_) {
+      char hexbuf[128];
+      int n = 0;
+      for (size_t i = 0; i < payload.size() && n < 120; i++) {
+        n += snprintf(hexbuf + n, sizeof(hexbuf) - n, "%02x ", payload[i]);
+      }
+      ESP_LOGD(TAG, "Vitals frame (size=%zu): %s", payload.size(), hexbuf);
     }
-    if (respiration_rate_sensor_ != nullptr && br_scaled > 0) {
-      respiration_rate_sensor_->publish_state(br);
+    uint8_t vcount = payload[5];
+    if (vcount == 0 || payload.size() < 6 + 14) {
+      // Empty vitals frame (FW3 FUN_0002dc40 clear-path) or truncated payload.
+      ESP_LOGD(TAG, "Vitals: empty frame (count=%u size=%zu) — no target locked", vcount, payload.size());
+      if (heart_rate_sensor_ != nullptr) heart_rate_sensor_->publish_state(NAN);
+      if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(NAN);
+      return;
     }
+    const int off = 6;
+    uint16_t hr_x100 = ((uint16_t) payload[off + 1] << 8) | payload[off + 2];
+    uint16_t br_x100 = ((uint16_t) payload[off + 3] << 8) | payload[off + 4];
+    float hr_bpm = hr_x100 / 100.0f;
+    float br_bpm = br_x100 / 100.0f;
+    if (heart_rate_sensor_ != nullptr) heart_rate_sensor_->publish_state(hr_bpm);
+    if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(br_bpm);
+    ESP_LOGD(TAG, "Vitals: track_id=%u HR=%.1f BR=%.1f", payload[off], hr_bpm, br_bpm);
     return;
   }
 
-  // Modes 3 / 8: location tracking per-target.
   if (!this->location_reporting_active_) {
     return;
   }
@@ -1858,6 +2031,25 @@ void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
   cmd.data.push_back(0x01); // UINT16
   cmd.data.push_back((word_val >> 8) & 0xFF);
   cmd.data.push_back(word_val & 0xFF);
+
+  command_queue_.push_back(cmd);
+}
+
+void FP2Component::enqueue_command_(OpCode type, AttrId attr_id,
+                                    uint32_t dword_val) {
+  FP2Command cmd;
+  cmd.type = type;
+  cmd.attr_id = attr_id;
+  cmd.retry_count = 0;
+
+  // Payload: [SubID 2] [Type 1 (0x02 UINT32)] [Data 4 BE]
+  cmd.data.push_back((((uint16_t) attr_id) >> 8) & 0xFF);
+  cmd.data.push_back(((uint16_t) attr_id) & 0xFF);
+  cmd.data.push_back(0x02); // UINT32
+  cmd.data.push_back((dword_val >> 24) & 0xFF);
+  cmd.data.push_back((dword_val >> 16) & 0xFF);
+  cmd.data.push_back((dword_val >> 8) & 0xFF);
+  cmd.data.push_back(dword_val & 0xFF);
 
   command_queue_.push_back(cmd);
 }
@@ -2128,6 +2320,7 @@ std::string FP2Component::grid_to_hex_card_format(const GridMap &grid) {
 void FP2Component::dump_config() {
   ESP_LOGCONFIG(TAG, "Aqara FP2 (built " __DATE__ " " __TIME__ "):");
   ESP_LOGCONFIG(TAG, "  Debug Mode: %s", debug_mode_ ? "ON" : "OFF");
+  ESP_LOGCONFIG(TAG, "  Emulate Stock (skip init burst): %s", emulate_stock_ ? "ON" : "OFF");
   ESP_LOGCONFIG(TAG, "  Mounting Position: %d", mounting_position_);
   ESP_LOGCONFIG(TAG, "  Zones: %d", zones_.size());
   if (reset_pin_ != nullptr) {
