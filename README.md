@@ -561,6 +561,10 @@ If HR/BR stay unknown after the above:
 
 - **Heart rate deviation** — Derived ESP-side as population std-dev over the last 10 HR samples (~60 s). The radar does not emit a deviation field on any SubID — the `heartDev`/`breathDev` slots in the 0x0117 payload are always zero. The derived value is a reasonable HRV proxy at 6 s sample rate, not clinical-grade HRV.
 
+- **Sleep-sensor clear delay (empty room)** — When you get out of bed in Sleep mode, FW3 stops emitting any presence signal at all — no `0x0159` vitals, no `0x0167` sleep_presence, no `0x0104` global_presence. The driver infers "room empty" from radar silence via a 60-second quiet-timeout: after that long with zero occupancy signals, `global_presence`, `sleep_presence`, `sleep_state`, `heart_rate`, `respiration_rate`, and `heart_rate_deviation` all clear in one shot (look for `Sleep-mode quiet timeout` in the logs). Consequence: automations that consume these sensors see a ~60 s lag after you leave the bed.
+
+- **Radar temperature is boot-time-only in Sleep mode** — FW3 does not emit unsolicited `0x0128` temperature reports. The driver's init-time READ returns one value that populates `radar_temperature`, after which it stays fixed until the next radar reset or mode cycle. Zone/Fall modes (FW1/FW2) do push periodic temperature reports.
+
 - **Presence delay after OTA** — The radar may take 2-5 minutes after an OTA flash before it starts producing presence reports. Target tracking works immediately. Use the `radar_state` sensor to monitor boot progress.
 
 - **Extracted binary naming** — `fp2_radar_mss.bin` is misnamed; it is actually FW1's DSS (application) content, not the MSS boot loader. The Ghidra analysis was performed on the correct data despite the naming.

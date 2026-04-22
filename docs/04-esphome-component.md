@@ -300,6 +300,50 @@ Within ~6-12 s of a track being allocated, `0x0159` frames arrive and
 becomes available after 2+ HR samples (~12 s) and stabilises over the full
 10-sample rolling window (~60 s).
 
+### Global-presence cross-trigger
+
+FW3 can legitimately emit `0x0104=0` for a stationary sleeper even while
+GTrack has an active track and `0x0159` is streaming. Left alone, the
+global-presence cascade would clobber `global_presence`, `sleep_presence`,
+and the HR/BR sensors every few seconds. The driver handles this with two
+linked mechanisms:
+
+- **Cross-trigger ON** — any occupancy signal (`0x0159` frame, `0x0167=1`,
+  `0x0171=1`) forces `global_presence` ON and stamps a watermark
+  (`last_vitals_millis_`).
+- **Suppression of `0x0104=0` clear cascade** — if the watermark is less
+  than 30 s old while in Sleep mode, a `0x0104=0` is logged and dropped
+  rather than publishing false and clearing sleep-state sensors.
+
+Non-sleep modes and `0x0104!=0` events are unchanged.
+
+### Leaving the bed — quiet-timeout auto-clear
+
+Once GTrack releases the track, FW3 goes completely silent on the wire
+(no `0x0159`, no `0x0167`, no `0x0171`, no `0x0104`). There is no explicit
+"room empty" event to latch onto.
+
+The driver runs a quiet-timeout check every loop tick: if `sleep_mode_active_`
+and no occupancy signal has arrived for **60 s** (`SLEEP_QUIET_TIMEOUT_MS_`),
+it publishes once to clear `global_presence`, `sleep_presence`, `sleep_state`
+("none"), `heart_rate` / `respiration_rate` / `heart_rate_deviation` (NaN)
+and then zeros the watermark so the cascade doesn't re-fire. Log line:
+`Sleep-mode quiet timeout: no occupancy signal for >60s, clearing`.
+
+Practical consequence: automations consuming `global_presence` in Sleep
+mode see a ~60 s delay after you leave the bed before the sensor drops.
+Tune `SLEEP_QUIET_TIMEOUT_MS_` in `fp2_component.h` to change.
+
+### 45-second re-init preservation
+
+The driver runs a full init at first heartbeat and again at the 45-second
+mark (radar ACKs commands during boot but doesn't apply them — the re-init
+ensures config lands). The second init's "publish initial OFF states"
+block skips `global_presence`, `sleep_presence`, and `sleep_state` when
+`sleep_mode_active_` and the vitals watermark is fresh — otherwise the
+re-init would wipe state the user has already established by getting
+into bed during the 45 s window.
+
 **Why this differs from Zone Detection**: FW1 uses a simpler peak-detection
 pipeline without the GTrack allocation velocity gate. It tracks a stationary
 target as soon as CFAR finds a peak, which is why Zone Detection "just works"

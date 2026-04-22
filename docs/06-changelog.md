@@ -114,6 +114,52 @@ Track-loss gaps correlated with expected re-orientation events (rolling out
 of the bed region, etc.) and the track was re-allocated cleanly on return.
 No driver-side errors or dropouts.
 
+### Later 2026-04-22 — Sleep mode presence-state lifecycle
+
+Follow-on work after the vitals fix to make `global_presence`,
+`sleep_presence`, and the vitals sensors behave correctly through the
+full in-bed → out-of-bed → empty-room cycle.
+
+- **Cross-trigger** — any occupancy signal (0x0159 frame, 0x0167=1,
+  0x0171=1) asserts `global_presence` ON and stamps a watermark. Covers
+  the HR=0 FFT warm-up phase at mode-entry (the first ~20-30 s after FW3
+  boot) by triggering on any of the three signal types, not just HR>0.
+
+- **0x0104=0 suppression in sleep mode** — FW3 can emit 0x0104=0 for a
+  stationary sleeper even while GTrack has an active track and 0x0159
+  is streaming. If the watermark is < 30 s old, the clear cascade is
+  dropped rather than publishing false.
+
+- **45 s re-init preservation** — the second init (post-boot) was
+  unconditionally publishing `global_presence`, `sleep_presence`, and
+  `sleep_state` to OFF/none as part of a "reset state" block. Observed
+  live: user in bed, sleep_presence cross-triggered ON at t=32 s, both
+  sensors flattened at t=45 s. Fixed by skipping the OFF publishes for
+  those three sensors when the watermark is fresh.
+
+- **Quiet-timeout auto-clear** — once GTrack releases the track, FW3
+  stops emitting any presence signal (no 0x0159, 0x0167, 0x0171, 0x0104
+  — only the 0x0102 heartbeat). Sensors would otherwise stay latched at
+  their last-seen ON value forever. New loop-tick check clears all
+  sleep-mode sensors after 60 s of radar silence. Tunable via
+  `SLEEP_QUIET_TIMEOUT_MS_`.
+
+- **Temperature READ response dispatch** — FW3 does not push unsolicited
+  0x0128 temperature reports. Our init-time READ returns a value, but the
+  op=4 RESPONSE handler previously only logged `[READBACK]` without
+  calling the per-SubID publisher. Added a small switch so TEMPERATURE
+  responses also populate `radar_temperature`. Still one-shot per mode
+  cycle (no periodic refresh).
+
+- **Documentation:** status-LED optical cross-talk with the OPT3001
+  ambient light sensor documented in `01-hardware.md` and
+  `04-esphome-component.md`. Stock firmware's `lux_acc_led_onoff`
+  dynamically dims the LED against ambient lux; the ESPHome driver does
+  not replicate it.
+
+Commits: `7a05009`, `3a6614e`, `0ee6742`, `239e24f`, `56f986e`,
+`e7e5a4e`, `2188c9c`.
+
 ### Superseded (preserved for history)
 
 The 2026-04-21 entries below chase two wrong theories that were ruled out:
