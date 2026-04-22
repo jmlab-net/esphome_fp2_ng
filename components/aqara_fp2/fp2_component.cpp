@@ -393,6 +393,51 @@ void FP2Component::loop() {
 
   check_initialization_();
   process_command_queue_();
+  check_sleep_quiet_timeout_();
+}
+
+void FP2Component::check_sleep_quiet_timeout_() {
+  // In Sleep Monitoring mode, FW3 stops emitting anything about presence
+  // once GTrack releases the track — no 0x0159, no 0x0167, no 0x0171, no
+  // 0x0104. The sensors would otherwise latch at their last-seen ON value
+  // indefinitely. If we haven't seen any occupancy signal for this long
+  // (comfortably past the 0x0159 ~6 s cadence and well beyond a plausible
+  // transient), declare the bed empty and clear the derived sensors.
+  //
+  // last_vitals_millis_ is stamped by every 0x0159 frame and every
+  // 0x0167=1 / 0x0171=1 event (see their handlers). Once it's stale we
+  // zero it to avoid re-firing the cascade each loop.
+  if (!sleep_mode_active_ || last_vitals_millis_ == 0) {
+    return;
+  }
+  if ((millis() - last_vitals_millis_) < SLEEP_QUIET_TIMEOUT_MS_) {
+    return;
+  }
+  ESP_LOGI(TAG, "Sleep-mode quiet timeout: no occupancy signal for >%us, clearing",
+           SLEEP_QUIET_TIMEOUT_MS_ / 1000U);
+  last_vitals_millis_ = 0;
+  if (global_presence_active_) {
+    global_presence_active_ = false;
+    if (global_presence_sensor_ != nullptr) {
+      global_presence_sensor_->publish_state(false);
+    }
+  }
+  if (sleep_presence_sensor_ != nullptr) {
+    sleep_presence_sensor_->publish_state(false);
+  }
+  if (sleep_state_sensor_ != nullptr) {
+    sleep_state_sensor_->publish_state("none");
+  }
+  if (heart_rate_sensor_ != nullptr) {
+    heart_rate_sensor_->publish_state(NAN);
+  }
+  if (respiration_rate_sensor_ != nullptr) {
+    respiration_rate_sensor_->publish_state(NAN);
+  }
+  if (heart_rate_dev_sensor_ != nullptr) {
+    heart_rate_dev_sensor_->publish_state(NAN);
+  }
+  hr_window_.clear();
 }
 
 void FP2Component::check_initialization_() {

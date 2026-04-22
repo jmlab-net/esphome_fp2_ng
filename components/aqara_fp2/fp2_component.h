@@ -566,6 +566,12 @@ protected:
   void check_initialization_();
   void publish_radar_state_(const char *state);
 
+  // Quiet-timeout auto-clear for Sleep Monitoring. FW3 stops emitting
+  // state entirely once GTrack releases the track, so we need to infer
+  // "room empty" from radar silence.
+  void check_sleep_quiet_timeout_();
+  static constexpr uint32_t SLEEP_QUIET_TIMEOUT_MS_ = 60000U;   // 60 s
+
   aqara_fp2_accel::AqaraFP2Accel *fp2_accel_{nullptr};
 
   GPIOPin *reset_pin_{nullptr};
