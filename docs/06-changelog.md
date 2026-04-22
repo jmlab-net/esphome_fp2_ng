@@ -2,6 +2,127 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-22 — Sleep Monitoring working end-to-end: `emulate_stock` flag + vitals on SubID 0x0159
+
+### Definitive fix: stop the init burst in Sleep Monitoring, parse the right SubID
+
+Two separate issues were both blocking vitals output; together they explain
+every previous symptom.
+
+**1. Our init WRITE burst was disrupting FW3 DSS track allocation.**
+
+Ghidra deep-trace of `fp2_aqara_fw1.bin` (2026-04-22) confirmed the stock ESP
+firmware emits **zero UART WRITEs** on radar-ready:
+- `boot_init_main @ 0x400de62c` loads NVS, allocates buffers, publishes cloud
+  attrs — does not touch UART
+- `radar_ready_init_state @ 0x400e6350` (one-shot post-boot init) emits no
+  WRITEs, only sets a "cloud channel ready" latch
+- `after_radar_ready_poll @ 0x400e62b0` (triggered on radar heartbeat) calls
+  `lazy_read_and_publish_state @ 0x400e5c50` which emits **READs** (opcode=1)
+  for 0x0102 / 0x0116 / 0x0128 only when the cached byte is zero
+- All radar WRITEs are forwarded from cloud-initiated ZCL writes via
+  `HandleCloud_Write_Dispatcher @ 0x400e3399`
+
+Our driver's 15+ WRITE init burst (MONITOR_MODE, FALL_SENSITIVITY,
+LOCATION_REPORT_ENABLE, THERMO_EN, sleep-zone params, etc.) has no stock
+analog, and its timing relative to FW3's DSS boot was breaking GTrack's
+ability to allocate a track.
+
+Added `emulate_stock` YAML flag. Gated the init burst behind
+`!(emulate_stock_ && sleep_mode_active_)` — Zone and Fall modes still get the
+full init (empirically they need it, and don't hit the GTrack issue); Sleep
+Monitoring skips the burst and keeps whatever config is in radar flash from
+the previous WORK_MODE save.
+
+**2. Vitals were being parsed from the wrong SubID.**
+
+Prior driver code expected HR and BR on SubID 0x0117 in FW3, as a 100×-scaled
+u16 big-endian pair inside a 14-byte per-target block. Decompiling
+`vitals_hr_br_emitter @ 0x00006c84` in `fp2_radar_vitalsigns.bin` showed the
+function emits **both** 0x0117 (at `0x00006e2c`) and 0x0159 (at `0x0000701a`)
+— but:
+
+- 0x0117 is gated on `config+0xb8 == 1` (LOCATION_REPORT_ENABLE), AND
+  `target_count > 0`, AND a frame counter `+0x28 > 15`, AND motion/state
+  flags non-zero. For a stationary sleeper the counter rarely climbs and the
+  state flags rarely align — 0x0117 almost never fires.
+- 0x0159 is **not gated on +0xb8**. It fires every ~6 s whenever GTrack has
+  a track. It carries a 12-byte payload: `[tid][0][0][HR_bpm u8][0][HR_conf]
+  [BR_bpm u8][0][BR_conf][sleep_state][sleep_stage][event]`. HR and BR are
+  **direct u8 bpm, not scaled**.
+
+Switched the driver's `AttrId::SLEEP_DATA` handler to decode 0x0159's bytes
+[3] and [6] directly and publish to `heart_rate_sensor_` /
+`respiration_rate_sensor_`. The old 0x0117 FW3 branch is retained as
+diagnostic-only logging (so we can still observe it if it does fire).
+
+**3. Heart rate deviation is not emitted by the radar.**
+
+The `heartDev` and `breathDev` slots in the 0x0117 15-byte payload are always
+zero in FW3 emit. 0x0159 has no deviation field at all. Implemented
+`heart_rate_deviation` as an ESP-side rolling population standard deviation
+over the last 10 HR samples from 0x0159 (~60 s at 6 s cadence). Cleared on
+presence loss.
+
+### Workflow
+
+Setup recipe now in [04-esphome-component.md](04-esphome-component.md) and
+[../README.md](../README.md#sleep-monitoring-setup):
+
+1. `emulate_stock: true` in YAML, flash
+2. Cycle Operating Mode: Zone Detection → wait ~15 s → Sleep Monitoring
+3. Climb into bed with deliberate motion (GTrack needs centroid radial
+   velocity > 0.1 m/s to allocate the track — a person who lies still from
+   a distance won't get tracked)
+4. Once allocated, `stateParam sleep2free=9000` keeps the track alive for
+   ~7.5 min of stillness, so ordinary sleep behaviour works fine
+
+### Code changes
+
+- `components/aqara_fp2/__init__.py`: add `CONF_EMULATE_STOCK` schema entry,
+  wire setter
+- `components/aqara_fp2/fp2_component.h`: `emulate_stock_` member, HR ring
+  buffer (`HR_WINDOW_SIZE_=10`), setter
+- `components/aqara_fp2/fp2_component.cpp`:
+  - Gate init burst on `!(emulate_stock_ && sleep_mode_active_)`
+  - Remove the vestigial LOCATION_REPORT_ENABLE=1 pre-WORK_MODE WRITE that
+    was added for the 0x0117 path (kept only because 0x0159 isn't gated on
+    `+0xb8`)
+  - Rewrite `AttrId::SLEEP_DATA` handler: parse tid/HR/BR/confs/state/stage/
+    event from 0x0159 byte layout; publish HR and BR; update the HR ring
+    buffer and publish population std-dev to `heart_rate_dev_sensor_`
+  - `handle_location_tracking_report_` FW3 branch: stop publishing HR/BR
+    sensor values; keep diagnostic logging so 0x0117 is still observable
+  - `dump_config`: add the `Emulate Stock` line
+- Commits: `52c3e18`, `d73143c` (superseded), `59cdebe`, `1dd817f`
+
+### Verification
+
+An overnight soak-test confirmed continuous HR, BR, and HR-deviation output
+across a full ~8 h sleep window:
+
+- **Heart rate** — resting baseline in the high 50s / low 60s bpm, with
+  typical sleep-cycle drift down into the low 50s during deep sleep and
+  transient rises into the 70s on stirring events. Typical resting adult.
+- **Respiration rate** — steady around 14-18 br/min through most of the
+  night, dropping into the low teens during deep-sleep phases. Textbook.
+- **Heart-rate deviation** — near-zero (< 1 bpm std-dev) during stable
+  sleep; rose to 3-5 bpm during HR transitions and returned to baseline
+  within a minute or two.
+
+Track-loss gaps correlated with expected re-orientation events (rolling out
+of the bed region, etc.) and the track was re-allocated cleanly on return.
+No driver-side errors or dropouts.
+
+### Superseded (preserved for history)
+
+The 2026-04-21 entries below chase two wrong theories that were ruled out:
+GTrack velocity gate (partially right — the gate exists, but gating it was
+downstream of the real problem) and SLEEP_REPORT_ENABLE=1/heartbeat 0x0203
+sync (SLEEP_REPORT_ENABLE turned out to be a pure no-op in FW3; 0x0203 sync
+is useful but doesn't unblock vitals on its own). The actual blocker was
+our own init burst + wrong SubID decode, documented above.
+
 ## 2026-04-21 — Sleep Monitoring fix: SLEEP_REPORT_ENABLE=1, heartbeat 0x0203 sync
 
 ### Actual root cause found via stock ESP32 firmware diff

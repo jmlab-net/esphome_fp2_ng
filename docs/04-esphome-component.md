@@ -75,11 +75,11 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `global_zone.motion` | binary_sensor | motion | Overall motion (SubID 0x0103: even=active, odd=inactive) |
 | `people_count` | sensor | measurement | Total person count (from SubID 0x0165) |
 | `fall_detection` | binary_sensor | — | Fall event (SubID 0x0121) — see note below |
-| `sleep_state` | text_sensor | — | Sleep state: none/awake/light/deep (SubID 0x0161, not yet verified in FW3 RE) |
-| `sleep_presence` | binary_sensor | occupancy | Sleep zone presence (SubID 0x0167, not yet verified in FW3 RE) |
-| `heart_rate` | sensor | measurement (bpm) | Heart rate from FW3 (SubID 0x0117 payload bytes 1-2, u16 BE, ×0.01)* |
-| `respiration_rate` | sensor | measurement (br/min) | Respiration rate from FW3 (SubID 0x0117 payload bytes 3-4, u16 BE, ×0.01)* |
-| `heart_rate_deviation` | sensor | measurement (bpm) | Heart rate deviation (SubID 0x0159 if emitted — field not verified in current FW3 RE)* |
+| `sleep_state` | text_sensor | — | Sleep state: none/awake/light/deep (SubID 0x0161) |
+| `sleep_presence` | binary_sensor | occupancy | Sleep zone presence (SubID 0x0167) |
+| `heart_rate` | sensor (bpm) | measurement | Heart rate (SubID 0x0159 byte[3], direct u8) |
+| `respiration_rate` | sensor (br/min) | measurement | Respiration rate (SubID 0x0159 byte[6], direct u8) |
+| `heart_rate_deviation` | sensor (bpm) | measurement | Derived ESP-side: population std-dev of the last 10 HR samples. The radar does not emit a deviation field. |
 | `walking_distance` | sensor | measurement (m) | Cumulative walking distance (SubID 0x0174, confirmed cm÷100) |
 | `target_tracking` | text_sensor | diagnostic | Base64-encoded target data (SubID 0x0117) |
 | `location_report_switch` | switch | — | Show/hide target tracking data (see below) |
@@ -104,14 +104,26 @@ Commands are queued in a `std::deque<FP2Command>` and sent sequentially:
 | `zone_map_sensor` | text_sensor | diagnostic | Zone grid as hex string |
 
 *Heart rate and respiration in FW3 (Sleep Monitoring mode) arrive on SubID
-0x0117 — the SAME SubID that carries target X/Y tracking in FW1/FW2, but with
-a different payload layout. In FW3 the 14-byte per-target block is
-`[track_id u8][HR×100 u16 BE][BR×100 u16 BE][zeros]` where FW1/FW2 would
-encode X/Y coordinates and velocity. The driver's decoder is mode-aware — it
-routes 0x0117 to `handle_location_tracking_report_` in FW1/FW2 and to the
-vitals parser in FW3. Confirmed via Ghidra RE of FUN_00006c84 in the FW3 MSS
-binary. Sleep state / sleep presence / heart rate deviation field decoding is
-not yet re-verified against the current FW3 build. See
+**0x0159**, the primary FW3 vitals channel. Confirmed via decompile of
+`vitals_hr_br_emitter @ 0x00006c84` (and its emit call at `0x0000701a`) in
+`fp2_radar_vitalsigns.bin`. The 12-byte payload (after the BLOB2 header) is:
+`[tid][0][0][HR_bpm u8][0][HR_conf][BR_bpm u8][0][BR_conf][sleep_state][sleep_stage][event]`.
+HR and BR are **direct u8 bpm**, not scaled. 0x0159 is not gated on
+`LOCATION_REPORT_ENABLE` — it fires every ~6 s whenever GTrack has a track
+allocated.*
+
+*SubID 0x0117 in FW3 is a secondary 15-byte channel that emits HR×100 / BR×100
+as u16 BE but requires `config+0xb8 == 1` (LOCATION_REPORT_ENABLE=1) AND
+`target_count > 0` AND a cumulative frame counter > 15, so it rarely fires
+for a stationary sleeper. The driver logs 0x0117 payloads for observability
+but does not publish them to HR/BR sensors (to avoid racing 0x0159). The
+`heartDev` / `breathDev` slots in the 0x0117 payload are always zero in FW3
+— there is no radar-emitted deviation value. `heart_rate_deviation` is
+therefore computed on the ESP32 as a rolling population std-dev over the
+last 10 valid HR samples (~60 s at the 6 s 0x0159 cadence).*
+
+*In FW1/FW2, SubID 0x0117 carries X/Y target tracking — the driver's
+decoder is mode-aware via `sleep_mode_active_` and routes accordingly. See
 [02-uart-protocol.md](02-uart-protocol.md) and [07-firmware-analysis.md](07-firmware-analysis.md)
 for full details.*
 
@@ -251,22 +263,42 @@ breathing micro-motion.
 
 So the key is to get a track allocated first, then lie still.
 
+**There is also a second, non-obvious requirement on the ESP side:** the
+driver's post-boot init WRITE burst (15+ SubIDs: MONITOR_MODE, LEFT_RIGHT_REVERSE,
+PRESENCE_DETECT_SENSITIVITY, FALL_SENSITIVITY, LOCATION_REPORT_ENABLE, THERMO_EN,
+sleep-zone params, etc.) disrupts FW3's DSS track-allocation pipeline. Stock
+Aqara ESP32 emits zero UART WRITEs on radar-ready (verified via Ghidra of
+`fp2_aqara_fw1.bin`: `boot_init_main @ 0x400de62c`, `radar_ready_init_state @
+0x400e6350`, and `after_radar_ready_poll @ 0x400e62b0` only issue lazy READs
+for 0x0102/0x0116/0x0128). The stock flow is purely event-driven —
+ZCL attribute writes from the Aqara app are forwarded 1-to-1 via
+`HandleCloud_Write_Dispatcher @ 0x400e3399`, never a startup blast.
+
+Set **`emulate_stock: true`** in the YAML. The driver gates the init burst
+behind `!(emulate_stock_ && sleep_mode_active_)`, so Zone and Fall modes still
+receive the full init (they empirically need it and don't suffer the GTrack
+issue), while Sleep Monitoring skips the burst and keeps whatever config is
+in the radar's flash from the previous WORK_MODE save.
+
 **Correct usage:**
 
-1. Get out of the bed (make sure no stale track is already active in the bed)
-2. Set `operating_mode` to `Sleep Monitoring` (or cycle through another mode
-   back to Sleep Monitoring to force a fresh FW3 boot)
-3. Wait ~10 seconds for the radar to finish flash-save + restart + FW3 init
-4. **Approach the bed and climb in with noticeable motion** (walking toward
+1. YAML: `emulate_stock: true` under `aqara_fp2:`. Re-flash if not already set.
+2. Get out of bed (no stale track already active in the bed region)
+3. Set `operating_mode` → `Zone Detection`, wait ~15 s
+4. Set `operating_mode` → `Sleep Monitoring`. The WORK_MODE=9 WRITE triggers
+   a flash-save of the current RAM config and reboots the radar into FW3.
+   Wait ~15 s for `radar_state` to settle on `Sleep`
+5. **Approach the bed and climb in with noticeable motion** (walking toward
    the bed, rolling, shifting). The motion generates CFAR points with
    |velocity| > 0.1 m/s — enough to cross GTrack's allocation gate within
    the first 2-3 seconds of detection
-5. Lie still once in position. The allocated track is maintained through the
+6. Lie still once in position. The allocated track is maintained through the
    `static2free` / `sleep2free` timers
 
-Vital-signs FFT buffers then need another ~15-30 seconds of sustained
-detection to fill before the first Heart Rate / Respiration Rate values are
-emitted.
+Within ~6-12 s of a track being allocated, `0x0159` frames arrive and
+`heart_rate` / `respiration_rate` start publishing. `heart_rate_deviation`
+becomes available after 2+ HR samples (~12 s) and stabilises over the full
+10-sample rolling window (~60 s).
 
 **Why this differs from Zone Detection**: FW1 uses a simpler peak-detection
 pipeline without the GTrack allocation velocity gate. It tracks a stationary

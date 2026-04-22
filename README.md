@@ -6,7 +6,7 @@ The Aqara FP2 is a remarkable piece of hardware — an ESP32 paired with a TI IW
 
 This project replaces the stock ESP32 firmware with ESPHome, giving you local-only access to everything the radar can do: per-zone presence and motion detection, native people counting, sleep state monitoring with heart rate and respiration, fall detection with configurable overtime alerts, posture tracking (standing/sitting/lying), walking distance, and real-time target position streaming.
 
-Most features have been validated against the stock ESP32 firmware and the three per-mode TI radar firmwares (FW1 Zone / FW2 Fall / FW3 Sleep) through Ghidra reverse engineering, with 50+ SubIDs documented. A custom Lovelace card provides live radar visualisation with zone overlays and posture-aware target tracking. Sleep-monitoring and full-image radar OTA are still in progress — see *Experimental* below and [docs/06-changelog.md](docs/06-changelog.md) for the honest status.
+Most features have been validated against the stock ESP32 firmware and the three per-mode TI radar firmwares (FW1 Zone / FW2 Fall / FW3 Sleep) through Ghidra reverse engineering, with 50+ SubIDs documented. A custom Lovelace card provides live radar visualisation with zone overlays and posture-aware target tracking. Sleep Monitoring (heart rate, respiration, sleep state, derived HR variability) now works end-to-end — see *Sleep Monitoring setup* below. Full-image radar OTA is still experimental; see [docs/06-changelog.md](docs/06-changelog.md) for the full history.
 
 Forked from [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
@@ -29,13 +29,13 @@ Replaces the stock ESP32 firmware on the Aqara FP2 with ESPHome, while keeping t
 - **Walking distance** — cumulative distance sensor
 - **Real-time target tracking** — individual target positions with configurable publish rate
 - **Zone presence and motion** — per-zone binary sensors with presence inference
+- **Sleep monitoring (heart rate, respiration, HR variability, sleep state)** — works on stock radar firmware once the driver's init burst is disabled (`emulate_stock: true`) and the user climbs into bed with motion after mode switch. HR and BR decoded from SubID 0x0159 (primary FW3 vitals channel, direct u8 bpm at bytes [3] and [6]). Heart-rate-deviation is derived ESP-side as the rolling standard deviation of the last 10 HR samples (~60 s window) — the radar itself doesn't emit a deviation field. See *Sleep Monitoring setup* below.
 - **Factory-calibrated light sensor** — OPT3001 with per-unit NVS calibration
 - **Accelerometer corrections** — factory calibration from NVS
 - **Auto-calibration** — room boundary and interference detection buttons
 
 ### Experimental / in progress
 
-- **Sleep monitoring (heart rate, respiration)** — protocol decoder landed (HR/BR read from 0x0117 in mode 9, scaled ×100 u16 BE), but the "sleep space intelligent learning" calibration command that Aqara requires before sleep tracking engages has not yet been identified. Until it is, mode-9 sensors stay unpopulated. Heart-rate-deviation is not emitted by stock radar firmware and will never populate.
 - **Radar firmware OTA (XMODEM-1K)** — protocol proven working end-to-end (handshake confirms, blocks transfer at ~720 ms each) but transfers consistently cancel at ~18-22% with radar-emitted CAN bytes. Root cause unknown. Aqara's stock OTA completes in under a minute; the mechanism they use is still being investigated. Safe in that aborted transfers don't corrupt the three pre-installed image slots (commit only happens on successful EOT).
 
 All data stays local. No Aqara cloud dependency.
@@ -56,13 +56,16 @@ See [docs/06-changelog.md](docs/06-changelog.md) for the original changelog.
 - Location reporting always enabled at radar level (people counting dependency)
 - **All three grids (edge, interference, exit) always sent during init** — radar silently suppresses presence/motion reports if any grid is missing
 - Double-init at 45 seconds — radar ACKs commands during boot but doesn't apply them
+- **Init burst was disrupting FW3 DSS track allocation** — stock ESP firmware sends zero UART WRITEs on radar-ready (verified via Ghidra); our 15+ WRITE init burst had no stock analog and prevented vitals from ever emitting. Fixed by gating the burst on non-sleep modes via the `emulate_stock` flag.
+- **Vitals parsed from wrong SubID** — driver expected HR/BR on 0x0117 (100×-scaled, rarely fires); correct primary channel is 0x0159 with direct u8 bpm at bytes [3] and [6]. Confirmed via decompile of `vitals_hr_br_emitter @ 0x00006c84`.
 
 **New features:**
+- `emulate_stock: true` YAML flag — skip the driver's init burst in Sleep Monitoring mode so FW3 GTrack can allocate a track
 - Global people count sensor
 - Per-zone native people counting (SubID 0x0175)
 - Per-zone posture tracking (standing/sitting/lying)
 - Fall detection via 0x0155 PEOPLE_COUNTING (Ghidra-confirmed source)
-- Sleep monitoring: state, presence, heart rate, respiration, heart rate deviation
+- Sleep monitoring: state, presence, heart rate, respiration, derived heart rate deviation
 - Walking distance sensor
 - Radar state diagnostic sensor (Booting/Init sent/Re-init/Ready/Presence)
 - OPT3001 ambient light with factory NVS calibration
@@ -158,6 +161,11 @@ aqara_fp2:
   uart_id: uart_bus
   radar_reset_pin: GPIO13
   mounting_position: left_corner  # wall | left_corner | right_corner
+
+  # Skip the driver's init WRITE burst in Sleep Monitoring mode. Required
+  # for vitals to work — our init burst disrupts FW3's GTrack track
+  # allocation. Zone/Fall modes still get the full init unchanged.
+  emulate_stock: true
 
   # Global sensors
   people_count:
@@ -302,9 +310,9 @@ show_zone_labels: true  # Show zone labels (default: true)
 | `operating_mode` | select | Operating mode: Zone Detection / Fall Detection / Sleep Monitoring / Fall + Positioning |
 | `sleep_state` | text_sensor | none / awake / light / deep (requires sleep mode ON) |
 | `sleep_presence` | binary_sensor | Sleep zone occupancy (requires sleep mode ON) |
-| `heart_rate` | sensor (bpm) | Heart rate (requires sleep mode ON) |
-| `respiration_rate` | sensor (br/min) | Respiration rate (requires sleep mode ON) |
-| `heart_rate_deviation` | sensor (bpm) | Heart rate deviation (requires sleep mode ON) |
+| `heart_rate` | sensor (bpm) | Heart rate (SubID 0x0159 byte[3], direct u8 bpm. Requires sleep mode ON + `emulate_stock: true`) |
+| `respiration_rate` | sensor (br/min) | Respiration rate (SubID 0x0159 byte[6], direct u8. Requires sleep mode ON + `emulate_stock: true`) |
+| `heart_rate_deviation` | sensor (bpm) | Derived ESP-side: population std-dev of last 10 HR readings (~60 s window). Radar does not emit a deviation field. |
 | `walking_distance` | sensor (m) | Cumulative walking distance |
 | `dwell_time_enable` | config (bool) | Enable dwell time tracking (default: false) |
 | `sleep_mount_position` | config (0-3) | Sleep-specific mounting position (0=ceiling, 1=wall-side, 2=wall-head, 3=wall-foot) |
@@ -524,29 +532,38 @@ for the full SBL decompilation and QSPI flash map.
 
 The stock app's "AI Learning" feature triggers both edge and interference auto-calibration simultaneously while the room is empty. Use the `calibrate_edge` and `calibrate_interference` buttons together to replicate this — ensure the room is clear first.
 
+## Sleep Monitoring setup
+
+The full sequence to get HR / BR / HR-variability flowing:
+
+1. **In YAML, set `emulate_stock: true`** inside the `aqara_fp2:` block. Without this, the driver sends a 15+ WRITE init burst after every radar boot, and the burst disrupts FW3's DSS GTrack track allocation. Zone/Fall modes still receive the full init — the flag only changes behaviour in Sleep Monitoring.
+2. Flash the firmware (OTA is fine).
+3. In HA, set **Operating Mode → Zone Detection**. Wait ~15 s for the radar to flash-save and restart in FW1.
+4. Set **Operating Mode → Sleep Monitoring**. Wait ~15 s for the flash-save + FW3 boot. `radar_state` will transition Booting → Ready → Sleep.
+5. **Walk over to the bed and climb in with deliberate motion.** GTrack requires centroid radial velocity > 0.1 m/s to allocate a track. A person who just lies still from a distance will not be tracked. Once allocated, `stateParam sleep2free=9000` keeps the track alive for ~7.5 min of stillness, so you can sleep normally after initial entry.
+6. Within ~6-12 s of track allocation, the `heart_rate` and `respiration_rate` sensors start publishing; `heart_rate_deviation` becomes available after 2+ HR samples (~12 s).
+
+Vitals arrive on SubID `0x0159` (the primary FW3 vitals channel, ungated once a track exists — decoded from `vitals_hr_br_emitter @ 0x00006c84` in `fp2_radar_vitalsigns.bin`). The driver's old `0x0117` 100×-scaled path is retained as diagnostic-only logging because stock FW3 rarely fires it (it additionally gates on a frame counter + target_count + location_report_enable).
+
+If HR/BR stay unknown after the above:
+- Check `radar_state` is `Ready` or `Sleep`
+- Confirm `operating_mode` reads `Sleep Monitoring`
+- Check ESPHome logs for `Vitals 0x0159: ...` lines — if they appear, the sensor publish is fine and the remaining issue is whether HA is receiving them (API connected? friendly name correct?)
+- If there are no `Vitals 0x0159` lines for 60+ s, GTrack has probably not allocated a track — get out of bed, walk away, wait 15 s, re-enter with motion
+
 ## Known Limitations
 
-- **Sleep monitoring requires radar firmware swap** — The vital signs processing
-  (heart rate, respiration) runs on FW3, a completely separate radar firmware
-  from the default FW1. The vital signs DSP code does not exist in FW1 — scene
-  mode 9 alone is insufficient. Radar OTA (XMODEM-1K) is implemented and the
-  endpoint is verified; requires the 16 MB partition layout (see [FLASHING.md](FLASHING.md)).
+- **Sleep monitoring requires workflow discipline** — see the setup section above. The radar firmware is unchanged, but GTrack's velocity-allocation gate means a person who drops into bed from a resting state outside the FOV won't get tracked. Walk in with motion.
 
-- **Advanced fall detection requires radar firmware swap** — FW2 has a DSP-based
-  fall detection algorithm with scoring and height estimation, distinct from FW1's
-  basic fall algorithm. FW1's fall detection (SubID 0x0306) may only work from
-  ceiling mounting.
+- **Advanced fall detection requires radar firmware swap** — FW2 has a DSP-based fall detection algorithm with scoring and height estimation, distinct from FW1's basic fall algorithm. FW1's fall detection (SubID 0x0306) may only work from ceiling mounting. Switching to Fall Detection mode selects FW2 at boot via the WORK_MODE SBL selector.
 
-- **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep)
-  exist in the vital signs firmware. No REM detection.
+- **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep) exist in the vital signs firmware. No REM detection.
 
-- **Presence delay after OTA** — The radar may take 2-5 minutes after an OTA
-  flash before it starts producing presence reports. Target tracking works
-  immediately. Use the `radar_state` sensor to monitor boot progress.
+- **Heart rate deviation** — Derived ESP-side as population std-dev over the last 10 HR samples (~60 s). The radar does not emit a deviation field on any SubID — the `heartDev`/`breathDev` slots in the 0x0117 payload are always zero. The derived value is a reasonable HRV proxy at 6 s sample rate, not clinical-grade HRV.
 
-- **Extracted binary naming** — `fp2_radar_mss.bin` is misnamed; it is actually
-  FW1's DSS (application) content, not the MSS boot loader. The Ghidra analysis
-  was performed on the correct data despite the naming.
+- **Presence delay after OTA** — The radar may take 2-5 minutes after an OTA flash before it starts producing presence reports. Target tracking works immediately. Use the `radar_state` sensor to monitor boot progress.
+
+- **Extracted binary naming** — `fp2_radar_mss.bin` is misnamed; it is actually FW1's DSS (application) content, not the MSS boot loader. The Ghidra analysis was performed on the correct data despite the naming.
 
 ## Factory Calibration
 
