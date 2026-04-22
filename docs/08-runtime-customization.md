@@ -293,35 +293,30 @@ So autoscans, clear-button presses, or edits from other HA clients all repaint t
 
 ## Screenshots
 
-_TODO: Jon — replace each placeholder with a screenshot._
-
 ### Card — read-only view
-<!-- Screenshot: the card in normal live view showing zones, sensor marker, targets -->
-![Card read-only](../images/card_readonly.png)
+The card in normal live view: sensor marker in the top-left, painted edges, zone outlines with labels, and a detected target ("T0: Sitting").
+
+![Card read-only](../images/card_RadarMap.png)
 
 ### Card — edit mode, Zone N selected
-<!-- Screenshot: pencil active, layer dropdown on Zone 1, zones panel visible, mode dropdown -->
-![Card editing a zone](../images/card_edit_zone.png)
+Pencil active, layer dropdown on `Zone 1 (Living Room Presence)`, per-zone mode dropdown ("High"), and `Apply` / `Cancel` controls. Painted grid cells highlight the zone footprint.
 
-### Card — painting an edge boundary
-<!-- Screenshot: dragging to paint a row of edge cells -->
-![Painting edge](../images/card_edit_edge.png)
+![Card editing a zone](../images/card_ZoneEdit.png)
 
-### Status banner — calibrating
-<!-- Screenshot: orange banner with spinner visible during a Calibrate Room Boundaries press -->
-![Calibrating banner](../images/card_banner_calibrating.png)
+### Card — layer selection while editing
+Layer dropdown expanded showing the editable layers: `Edge / Boundary`, `Interference`, `Entry / Exit`, and each configured zone. Picking a layer scopes the paint/erase gesture to that grid.
+
+![Layer selection](../images/card_EditOptions.png)
 
 ### Status banner — reinitializing
-<!-- Screenshot: blue banner showing "Radar initializing (Booting)" right after a mount change or Reset Radar press -->
-![Reinitializing banner](../images/card_banner_reinit.png)
+Banner reads "Radar initializing (Init sent)…" right after a mount-position change or Reset Radar press. Grid is dimmed while the radar reboots.
+
+![Reinitializing banner](../images/card_StatusBanner.png)
 
 ### Secondary Lovelace card — FP2 Controls
-<!-- Screenshot: the entities card containing operating mode, mount position, calibrate/clear buttons, reset/reboot -->
-![Controls card](../images/card_controls_secondary.png)
+Companion card: status badges (radar state / version / temperature), Report Targets + Reset Radar + Reboot Sensor row, inline Operating Mode + Mount Position selects, paired Calibrate/Clear actions for Room Boundaries and Interference Areas, Delete False Targets chip, and the presence history graph below.
 
-### Home Assistant device page
-<!-- Screenshot: the FP2 device page in HA Settings > Devices showing all entities grouped by category -->
-![HA device page](../images/ha_device_page.png)
+![Controls card](../images/card_CalibrationControls.png)
 
 ---
 
