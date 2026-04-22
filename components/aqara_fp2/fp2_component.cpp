@@ -1347,15 +1347,15 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             if (sleep_presence_sensor_ != nullptr) {
                 sleep_presence_sensor_->publish_state(state != 0);
             }
-            // Sleep presence ON → force global presence ON. FW3's 0x0104
-            // presence byte can read 0 for a stationary sleeper even with a
-            // GTrack track active + vitals streaming; HA automations consume
-            // global_presence as the "room occupied" abstraction, so assert
-            // it from any occupancy signal. One-way only: never flip global
-            // OFF from here — let the 0x0104/motion cascade handle clearing.
-            if (state != 0 && global_presence_sensor_ != nullptr && !global_presence_active_) {
-                global_presence_active_ = true;
-                global_presence_sensor_->publish_state(true);
+            // Sleep presence ON → force global presence ON + stamp the
+            // vitals watermark so 0x0104=0 is suppressed even before FFT
+            // fills. One-way only: never flip global OFF from here.
+            if (state != 0) {
+                last_vitals_millis_ = millis();
+                if (global_presence_sensor_ != nullptr && !global_presence_active_) {
+                    global_presence_active_ = true;
+                    global_presence_sensor_->publish_state(true);
+                }
             }
         }
         break;
@@ -1369,10 +1369,13 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             if (sleep_presence_sensor_ != nullptr) {
                 sleep_presence_sensor_->publish_state(state != 0);
             }
-            // Same global-presence assertion as SLEEP_PRESENCE above.
-            if (state != 0 && global_presence_sensor_ != nullptr && !global_presence_active_) {
-                global_presence_active_ = true;
-                global_presence_sensor_->publish_state(true);
+            // Same global-presence assertion + watermark as SLEEP_PRESENCE.
+            if (state != 0) {
+                last_vitals_millis_ = millis();
+                if (global_presence_sensor_ != nullptr && !global_presence_active_) {
+                    global_presence_active_ = true;
+                    global_presence_sensor_->publish_state(true);
+                }
             }
         }
         break;
@@ -1420,18 +1423,17 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (respiration_rate_sensor_ != nullptr) {
                     respiration_rate_sensor_->publish_state(br_bpm > 0 ? (float) br_bpm : NAN);
                 }
-                // Valid vitals imply a tracked person in the bed → assert
-                // global presence. See SLEEP_PRESENCE case for rationale.
-                // Also stamp last_vitals_millis_ so the 0x0104 presence-loss
-                // cascade can suppress itself while vitals are fresh (FW3
-                // emits 0x0104=0 for stationary sleepers, which would
-                // otherwise clobber global_presence and sleep_presence).
-                if (hr_bpm > 0) {
-                    last_vitals_millis_ = millis();
-                    if (global_presence_sensor_ != nullptr && !global_presence_active_) {
-                        global_presence_active_ = true;
-                        global_presence_sensor_->publish_state(true);
-                    }
+                // Any 0x0159 frame implies a GTrack-allocated track in the
+                // bed → stamp the watermark so the 0x0104=0 clear cascade
+                // is suppressed. This covers the first ~30 s after FW3
+                // boot too, when HR is still 0 because the vital-signs
+                // FFT windows haven't filled. Also assert global presence
+                // (one-way only; clearing stays with the gated 0x0104
+                // cascade after the watermark expires).
+                last_vitals_millis_ = millis();
+                if (global_presence_sensor_ != nullptr && !global_presence_active_) {
+                    global_presence_active_ = true;
+                    global_presence_sensor_->publish_state(true);
                 }
 
                 // Heart rate deviation: rolling population std dev over the

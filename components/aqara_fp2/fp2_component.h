@@ -575,7 +575,11 @@ protected:
   bool emulate_stock_{false}; // Skip init WRITE burst — stock ESP sends no WRITEs at init, only forwards cloud ZCL writes
   bool global_presence_active_{false};
   uint32_t last_heartbeat_millis_{0};
-  uint32_t last_vitals_millis_{0};   // millis() of last valid 0x0159 HR frame
+  // millis() of last sleep-occupancy signal (any 0x0159 frame, 0x0167 ON,
+  // or 0x0171 ON). Used to suppress 0x0104=0 clear cascade while a sleeper
+  // is being tracked — including the first ~30 s after FW3 boot when HR is
+  // still 0 because FFT windows haven't filled.
+  uint32_t last_vitals_millis_{0};
 
   // Configuration State
   uint8_t mounting_position_{0x01}; // Default Wall
