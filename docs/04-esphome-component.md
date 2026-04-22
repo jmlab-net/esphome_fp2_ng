@@ -404,6 +404,13 @@ The OPT3001 ambient light sensor shares the I2C bus with the accelerometer:
   on >5% change to avoid flooding HA.
 - **Bus contention**: 5ms yield between accel and OPT3001 reads. Automatic
   `i2c_master_bus_reset()` on timeout/invalid-state errors.
+- **Optical cross-talk with status LED**: The OPT3001 and the device's
+  indicator LED share the same front optical window. When the LED is on,
+  the sensor reads artificially higher lux — most visible in a dark room,
+  where the LED can dominate the reading. Stock firmware modulates the LED
+  brightness against ambient lux to reduce this; the ESPHome driver does
+  not. If you need clean ambient readings, turn the `Status LED` entity
+  off (or use an automation to disable it during measurement windows).
 
 ## Configuration Reference
 
