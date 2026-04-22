@@ -233,16 +233,6 @@ void FP2Component::set_operating_mode(const std::string &mode) {
     }
   }
 
-  // LOCATION_REPORT_ENABLE=1 opens FW3's +0xb8 emit gate for SubID 0x0117
-  // (HR/BR payload). With emulate_stock=true the init burst no longer sets
-  // this, so we must set it explicitly before WORK_MODE=9 triggers the
-  // flash save. Without it, FW3 boots with +0xb8=0 and 0x0117 never emits —
-  // the driver's HR/BR sensors stay NAN even though 0x0159 sleep-staging
-  // frames (which aren't gated on +0xb8) do arrive.
-  if (sleep) {
-    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);  // BOOL
-  }
-
   // Write sleep enable flag to radar RAM.
   //
   // 2026-04-21 CORRECTION (supersedes earlier "value=9" comment):
@@ -448,14 +438,15 @@ void FP2Component::check_initialization_() {
     // radar_ready_init_state @ 0x400e6350, after_radar_ready_poll @ 0x400e62b0
     // only READ 0x0102/0x0116/0x0128 lazily). All WRITEs are cloud-forwarded
     // ZCL writes from the Aqara app. Our 15+ WRITE init burst is our
-    // invention and may be destabilising FW3 sleep-mode DSS.
+    // invention and was destabilising FW3 sleep-mode DSS GTrack allocation.
     //
-    // emulate_stock=true skips this block so the radar keeps whatever config
-    // it has in flash (from prior Aqara-app pairing or prior WORK_MODE=N
-    // flash-save). Grids + zones still get sent below because our empirical
-    // testing found presence detection requires them even though stock
-    // doesn't send them.
-    if (!emulate_stock_) {
+    // emulate_stock=true skips this block ONLY in sleep mode so the radar
+    // keeps whatever config is in flash (from prior Aqara-app pairing or
+    // prior WORK_MODE=N flash-save). Zone and Fall modes still get the full
+    // init because their DSS pipelines don't have the GTrack velocity-gate
+    // problem and empirically need our config writes to track properly.
+    // Grids + zones below always run regardless.
+    if (!(emulate_stock_ && sleep_mode_active_)) {
     enqueue_command_(OpCode::WRITE, AttrId::MONITOR_MODE, (uint8_t) 0);
     enqueue_command_(OpCode::WRITE, AttrId::LEFT_RIGHT_REVERSE,
                      (uint8_t)(left_right_reverse_ ? 2 : 0));
@@ -516,7 +507,7 @@ void FP2Component::check_initialization_() {
       enqueue_command_blob2_(AttrId::FALLDOWN_BLIND_ZONE,
           std::vector<uint8_t>(falldown_blind_zone_.begin(), falldown_blind_zone_.end()));
     }
-    }  // end if (!emulate_stock_)
+    }  // end if (!(emulate_stock_ && sleep_mode_active_))
 
     // 2. Grids — all three must be sent every init for the radar to produce
     //    presence/motion reports.  Send configured grids or empty defaults.
@@ -1168,6 +1159,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (heart_rate_dev_sensor_ != nullptr) {
                     heart_rate_dev_sensor_->publish_state(NAN);
                 }
+                hr_window_.clear();
             }
         }
         break;
@@ -1397,6 +1389,30 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (respiration_rate_sensor_ != nullptr) {
                     respiration_rate_sensor_->publish_state(br_bpm > 0 ? (float) br_bpm : NAN);
                 }
+
+                // Heart rate deviation: rolling population std dev over the
+                // last HR_WINDOW_SIZE_ valid HR readings. The radar itself
+                // does not emit a deviation value (0x0117's heartDev slot is
+                // always zero; 0x0159 has no deviation field), so we derive
+                // one here — a reasonable HRV proxy at ~6s sample rate.
+                if (hr_bpm > 0) {
+                    hr_window_.push_back(hr_bpm);
+                    if (hr_window_.size() > HR_WINDOW_SIZE_) {
+                        hr_window_.pop_front();
+                    }
+                    if (heart_rate_dev_sensor_ != nullptr && hr_window_.size() >= 2) {
+                        double sum = 0.0;
+                        for (uint8_t v : hr_window_) sum += v;
+                        double mean = sum / hr_window_.size();
+                        double sq = 0.0;
+                        for (uint8_t v : hr_window_) {
+                            double d = (double) v - mean;
+                            sq += d * d;
+                        }
+                        float stddev = (float) std::sqrt(sq / hr_window_.size());
+                        heart_rate_dev_sensor_->publish_state(stddev);
+                    }
+                }
             } else {
                 ESP_LOGW(TAG, "Sleep blob 0x159 unexpected size %d bytes", blob_len);
             }
@@ -1570,31 +1586,31 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   // When sleep_mode_active_ we route to the vitals decode; otherwise to the
   // tracking decode.
   if (this->sleep_mode_active_) {
-    // Diagnostic: dump the raw blob so we can see what FW3 is actually sending.
+    // 2026-04-22: FW3 canonical vitals channel is SubID 0x0159 (handled in
+    // AttrId::SLEEP_DATA) — ungated, fires every ~6s whenever a track is
+    // allocated. SubID 0x0117 in mode 9 is a secondary 100x-scaled channel
+    // that rarely fires (needs LOCATION_REPORT_ENABLE=1 + target_count>0 +
+    // counter>15 + motion flags). To avoid racing the 0x0159 handler and
+    // clobbering valid readings with NAN or stale scaled values, the HR/BR
+    // sensor publish is disabled here. Keep logging so we can observe if
+    // 0x0117 ever does fire.
     if (debug_mode_) {
       char hexbuf[128];
       int n = 0;
       for (size_t i = 0; i < payload.size() && n < 120; i++) {
         n += snprintf(hexbuf + n, sizeof(hexbuf) - n, "%02x ", payload[i]);
       }
-      ESP_LOGD(TAG, "Vitals frame (size=%zu): %s", payload.size(), hexbuf);
+      ESP_LOGD(TAG, "0x0117 FW3 frame (size=%zu): %s (diagnostic only; sensors driven by 0x0159)",
+               payload.size(), hexbuf);
     }
-    uint8_t vcount = payload[5];
-    if (vcount == 0 || payload.size() < 6 + 14) {
-      // Empty vitals frame (FW3 FUN_0002dc40 clear-path) or truncated payload.
-      ESP_LOGD(TAG, "Vitals: empty frame (count=%u size=%zu) — no target locked", vcount, payload.size());
-      if (heart_rate_sensor_ != nullptr) heart_rate_sensor_->publish_state(NAN);
-      if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(NAN);
-      return;
+    if (payload.size() >= 6 + 14) {
+      uint8_t vcount = payload[5];
+      const int off = 6;
+      uint16_t hr_x100 = ((uint16_t) payload[off + 1] << 8) | payload[off + 2];
+      uint16_t br_x100 = ((uint16_t) payload[off + 3] << 8) | payload[off + 4];
+      ESP_LOGD(TAG, "0x0117 FW3: count=%u tid=%u HR_x100=%u BR_x100=%u (not published)",
+               vcount, payload[off], hr_x100, br_x100);
     }
-    const int off = 6;
-    uint16_t hr_x100 = ((uint16_t) payload[off + 1] << 8) | payload[off + 2];
-    uint16_t br_x100 = ((uint16_t) payload[off + 3] << 8) | payload[off + 4];
-    float hr_bpm = hr_x100 / 100.0f;
-    float br_bpm = br_x100 / 100.0f;
-    if (heart_rate_sensor_ != nullptr) heart_rate_sensor_->publish_state(hr_bpm);
-    if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(br_bpm);
-    ESP_LOGD(TAG, "Vitals: track_id=%u HR=%.1f BR=%.1f", payload[off], hr_bpm, br_bpm);
     return;
   }
 

@@ -669,6 +669,11 @@ protected:
   sensor::Sensor *heart_rate_dev_sensor_{nullptr};
   sensor::Sensor *walking_distance_sensor_{nullptr};
 
+  // Rolling HR window for deviation (std dev) calculation. The radar emits
+  // HR every ~6s via SubID 0x0159; 10 samples ≈ 60s of data.
+  static constexpr size_t HR_WINDOW_SIZE_ = 10;
+  std::deque<uint8_t> hr_window_;
+
   // Map Configuration (compile-time generated)
   std::string map_config_json_;
 
