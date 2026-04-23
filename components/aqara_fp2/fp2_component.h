@@ -343,7 +343,13 @@ public:
   void set_left_right_reverse(bool val) { left_right_reverse_ = val; }
 
   void set_fall_detection_sensitivity(uint8_t val) {
-    fall_detection_sensitivity_ = val;
+    // Stock radar clamps FALL_SENSITIVITY to 0..3 in the cloud-write
+    // handler (verified via Ghidra: `bltui a10, 0x4, …` in
+    // HandleCloud_Write_Dispatcher). Values >= 4 are silently dropped
+    // by the radar. Clamp here so the YAML value matches the radar's
+    // accepted range and we never waste a WRITE on a value that will
+    // be rejected.
+    fall_detection_sensitivity_ = val > 3 ? 3 : val;
   }
   void set_fall_overtime_period(uint32_t val) {
     fall_overtime_period_ = val;
@@ -590,7 +596,7 @@ protected:
   // Configuration State
   uint8_t mounting_position_{0x01}; // Default Wall
   bool left_right_reverse_{false};
-  uint8_t fall_detection_sensitivity_{1};
+  uint8_t fall_detection_sensitivity_{3};
   uint32_t fall_overtime_period_{0};    // 0 = not configured (ms)
   uint16_t fall_delay_time_{0};         // 0 = not configured
   bool dwell_time_enable_{false};

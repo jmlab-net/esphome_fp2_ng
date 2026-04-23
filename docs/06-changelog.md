@@ -2,6 +2,55 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-23 — Fall detection compliance audit and cleanup
+
+Ghidra audit of stock FW1 (`fp2_aqara_fw1.bin`) against the driver's
+fall-detection code. Finding: only one of the four fall SubIDs we
+WRITE is genuinely in stock's protocol surface; the two "fall overtime"
+SubIDs we RX are not fall events at all.
+
+**What's real in stock (confirmed by dispatch-table/handler addresses):**
+
+| SubID | Direction | dtype | Stock handler | Notes |
+|---|---|---|---|---|
+| 0x0123 FALL_SENSITIVITY | ESP→radar | U8 | `HandleCloud_Write_Dispatcher` idx 5 @ 0x400e36e1 | Clamped 0..3 (`bltui a10, 0x4`) |
+| 0x0121 FALL_DETECTION_RESULT | radar→ESP | U8 | RAM dispatch 0x3ffb13a0 → 0x400e5388 | FW2 emit at radar 0x0001db92 |
+| 0x0124 | radar→ESP | U8 | fall_overtime_report_period ack | Config echo only, cosmetic |
+
+**What was invented on our side (not on the wire):**
+
+- `FALL_OVERTIME_PERIOD = 0x0134` BLOB2 U32 — WRITE in init burst, not in
+  stock's cloud-attr table. Radar silently drops.
+- `FALL_DELAY_TIME = 0x0179` U16 — same.
+- `FALLDOWN_BLIND_ZONE = 0x0180` BLOB2 40B — same.
+- `FALL_OVERTIME_DETECTION = 0x0135` / `FALL_OVERTIME_REPORT = 0x0136` —
+  not fall events. 0x0135's stock handler (0x400e11ac) reads a u16
+  calibration/version value ("13.25.85"); 0x0136's stock handler
+  (0x400df760) is a 3-byte stub. Our `fall_overtime_sensor_` was wired
+  to SubIDs that never fire.
+
+The underlying radar parameters do exist in FW2 (debug strings
+`fall_delay_time:%d`, `falldown_blind_zone_lable`, `fallRecognizeTimeInUsec`)
+but they're configured via a command channel outside the cloud-attr
+SubID namespace — we haven't mapped it.
+
+### Code changes
+
+- **Remove three dead WRITEs** (0x0134, 0x0179, 0x0180) from the init
+  burst. YAML options retained as no-ops for config backwards-compat
+  (existing YAMLs don't break); `dump_config` warns when each is set.
+- **Neuter the 0x0135 / 0x0136 RX handlers** — no longer publish to
+  `fall_overtime_sensor_`. Sensor entity retained but will now stay
+  "unknown"; warning logged at setup if configured.
+- **Clamp `fall_detection_sensitivity` to 0..3** in the setter, matching
+  stock's radar-side validation. Default changed from 1 to **3** (max
+  sensitivity), configurable via YAML.
+- Clean up 0x0121 comment — drop unverified "type A / type B"
+  interpretation; treat as raw u8 boolean.
+- Fix stale comment claiming "Actual fall detection uses SubID 0x0306"
+  (it was fiction; no firmware emits 0x0306).
+
+
 ## 2026-04-22 — Sleep Monitoring working end-to-end: `emulate_stock` flag + vitals on SubID 0x0159
 
 ### Definitive fix: stop the init burst in Sleep Monitoring, parse the right SubID

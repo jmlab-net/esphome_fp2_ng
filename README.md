@@ -555,7 +555,9 @@ If HR/BR stay unknown after the above:
 
 - **Sleep monitoring requires workflow discipline** — see the setup section above. The radar firmware is unchanged, but GTrack's velocity-allocation gate means a person who drops into bed from a resting state outside the FOV won't get tracked. Walk in with motion.
 
-- **Advanced fall detection requires radar firmware swap** — FW2 has a DSP-based fall detection algorithm with scoring and height estimation, distinct from FW1's basic fall algorithm. FW1's fall detection (SubID 0x0306) may only work from ceiling mounting. Switching to Fall Detection mode selects FW2 at boot via the WORK_MODE SBL selector.
+- **Advanced fall detection requires radar firmware swap** — Fall Detection mode selects FW2 at boot via `WORK_MODE=8` (SubID 0x0116). FW2 has a DSP-based fall detection algorithm with scoring and height estimation, distinct from FW1. The radar emits fall events on **SubID 0x0121** (U8, 0=clear, non-zero=fall) — this is the only fall channel on the wire.
+
+- **Fall detection — limited protocol surface** — A 2026-04-23 Ghidra audit of stock FW1 confirmed only `FALL_SENSITIVITY` (SubID 0x0123, U8, clamped 0..3) is genuinely routed through stock's cloud-attr dispatcher. The other YAML options (`fall_overtime_period`, `fall_delay_time`, `falldown_blind_zone`) and the `fall_overtime` binary sensor exist in this driver but are **not on the protocol wire** — stock never writes/reads those SubIDs. Those YAML options are retained as no-ops for config backwards-compat; a warning is logged at setup when they're set. The underlying radar parameters exist in FW2 (per debug strings `fall_delay_time:%d`, `falldown_blind_zone_lable`) but are configured via some other command channel we haven't mapped.
 
 - **Sleep state** — Only values 0 (awake), 1 (light sleep), 2 (deep sleep) exist in the vital signs firmware. No REM detection.
 

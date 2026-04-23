@@ -517,16 +517,12 @@ void FP2Component::check_initialization_() {
                      (uint8_t)(walking_distance_sensor_ != nullptr ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_EN, true);
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_DATA, (uint8_t) 1);
-    if (fall_overtime_period_ > 0) {
-      // UINT32 — send as two uint16 WRITEs (high word then low word) via blob
-      std::vector<uint8_t> fop_data = {
-        (uint8_t)((fall_overtime_period_ >> 24) & 0xFF),
-        (uint8_t)((fall_overtime_period_ >> 16) & 0xFF),
-        (uint8_t)((fall_overtime_period_ >> 8) & 0xFF),
-        (uint8_t)(fall_overtime_period_ & 0xFF)
-      };
-      enqueue_command_blob2_(AttrId::FALL_OVERTIME_PERIOD, fop_data);
-    }
+    // FALL_OVERTIME_PERIOD (0x0134) WRITE removed 2026-04-23: audit of
+    // stock FW1 (fp2_aqara_fw1.bin) showed this SubID is not in the
+    // cloud-attr dispatch table, so stock never writes it and the radar
+    // almost certainly rejects / silently drops our WRITE. The YAML
+    // option is retained for backwards compatibility of existing configs
+    // but has no effect. See docs/06-changelog.md for the full audit.
     if (sleep_mount_position_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) sleep_mount_position_);
     }
@@ -539,19 +535,17 @@ void FP2Component::check_initialization_() {
       };
       enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs_data);
     }
-    if (fall_delay_time_ > 0) {
-      enqueue_command_(OpCode::WRITE, AttrId::FALL_DELAY_TIME, fall_delay_time_);
-    }
+    // FALL_DELAY_TIME (0x0179) WRITE removed 2026-04-23: not in stock's
+    // cloud-attr dispatch table. YAML retained but no-op. See changelog.
     if (sleep_bed_height_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::SLEEP_BED_HEIGHT, sleep_bed_height_);
     }
     if (overhead_height_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::OVERHEAD_HEIGHT, overhead_height_);
     }
-    if (has_falldown_blind_zone_) {
-      enqueue_command_blob2_(AttrId::FALLDOWN_BLIND_ZONE,
-          std::vector<uint8_t>(falldown_blind_zone_.begin(), falldown_blind_zone_.end()));
-    }
+    // FALLDOWN_BLIND_ZONE (0x0180) WRITE removed 2026-04-23: not in
+    // stock's cloud-attr dispatch table. YAML retained but no-op. See
+    // changelog.
     }  // end if (!(emulate_stock_ && sleep_mode_active_))
 
     // 2. Grids — all three must be sent every init for the radar to produce
@@ -1312,12 +1306,13 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 
     case AttrId::FALL_DETECTION_RESULT:
         // 0x0121 — fall detection event from FW2's fall ML state machine.
-        // Emitted as op=5 with UINT8: 0=clear, 1=fall type A, 2=fall type B.
-        // Confirmed via Ghidra of FW2 MSS (fp2_radar_mss_fw2.bin): FUN_0001db70
-        // calls the frame serializer with SubID=0x121 and 1-byte payload. Debug
-        // string "fall_detection:%d" sits at the emit site. Only fires in
-        // work_mode=8 when the fall ML flags a ballistic upright→horizontal
-        // motion pattern — lying down calmly will NOT trigger it.
+        // Emitted as op=5 UINT8. Stock stores the raw u8 with no bit-level
+        // interpretation; we treat it as a boolean (0=clear, non-zero=fall).
+        // Confirmed via Ghidra of FW2 MSS (fp2_radar_mss_fw2.bin) at radar
+        // offset 0x0001db92 loading `[r0+0x50c]`, and the stock ESP routing
+        // table at RAM 0x3ffb13a0 → handler 0x400e5388. Only fires in
+        // work_mode=8 on a ballistic upright→horizontal motion pattern —
+        // lying down calmly will NOT trigger it.
         if (payload.size() >= 4 && payload[2] == 0x00) {
             uint8_t state = payload[3];
             ESP_LOGI(TAG, "Fall detection (0x0121): %u", state);
@@ -1345,7 +1340,10 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         // DwellTime = 0.15 * cumulative_frame_count (NOT a fall indicator).
         // This SubID is sent from the radar's people counting function, which
         // also handles the "fall area" debug output — but the ontime/dwell field
-        // is NOT fall detection. Actual fall detection uses SubID 0x0306.
+        // is NOT fall detection. Fall events use SubID 0x0121 (see
+        // AttrId::FALL_DETECTION_RESULT above). A prior comment in this file
+        // claimed "SubID 0x0306" was the fall channel — that was fiction; no
+        // MSS firmware emits 0x0306.
         if (payload.size() >= 12 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 7 && payload.size() >= 5 + blob_len) {
@@ -1377,17 +1375,18 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 
     case AttrId::FALL_OVERTIME_DETECTION:
     case AttrId::FALL_OVERTIME_REPORT:
-        // 0x0135/0x0136 — Fall overtime. Handler for both SubIDs since dispatch
-        // table analysis shows radar_fall_overtime_det handles 0x0136 while
-        // 0x0135 goes to a config handler. Accept either.
-        if (payload.size() >= 7 && payload[2] == 0x02) {
-            uint32_t value = ((uint32_t)payload[3] << 24) | ((uint32_t)payload[4] << 16) |
-                             ((uint32_t)payload[5] << 8) | ((uint32_t)payload[6]);
-            ESP_LOGW(TAG, "Fall overtime (0x%04X): value=%u", (uint16_t)attr_id, value);
-            if (fall_overtime_sensor_ != nullptr) {
-                fall_overtime_sensor_->publish_state(value != 0);
-            }
-        }
+        // 0x0135 / 0x0136 — NOT fall overtime. 2026-04-23 audit of stock
+        // FW1 confirmed: 0x0135's stock handler (0x400e11ac) reads a u16
+        // calibration/version value (format string "13.25.85"); 0x0136's
+        // stock handler (0x400df760) is a 3-byte stub. Neither is a fall
+        // event. FW2 radar emits only 0x0121 for fall detection — there
+        // is no "fall overtime" stream on the wire.
+        //
+        // Kept as a no-op to avoid accidental publish. The
+        // fall_overtime_sensor_ entity is deprecated and will never
+        // populate under the current protocol understanding.
+        ESP_LOGD(TAG, "Ignoring 0x%04X — not a fall-overtime event (deprecated SubID)",
+                 (uint16_t)attr_id);
         break;
 
     case AttrId::SLEEP_STATE:
@@ -2054,6 +2053,29 @@ void FP2Component::dump_config() {
     if (!radar_firmware_url_.empty()) {
       ESP_LOGCONFIG(TAG, "  Firmware URL: %s", radar_firmware_url_.c_str());
     }
+  }
+  // Deprecation warnings — these YAML options are accepted for config
+  // backwards-compat but stock firmware does not route the matching
+  // SubIDs through the cloud-attr channel, so the WRITEs we used to
+  // send were silently dropped by the radar. Kept as storage-only.
+  if (fall_overtime_period_ > 0) {
+    ESP_LOGW(TAG, "  fall_overtime_period (%u ms) is configured but NOT sent to radar — "
+                  "SubID 0x0134 is not in stock's cloud-attr dispatch. No-op.",
+             (unsigned) fall_overtime_period_);
+  }
+  if (fall_delay_time_ > 0) {
+    ESP_LOGW(TAG, "  fall_delay_time (%u) is configured but NOT sent to radar — "
+                  "SubID 0x0179 is not in stock's cloud-attr dispatch. No-op.",
+             (unsigned) fall_delay_time_);
+  }
+  if (has_falldown_blind_zone_) {
+    ESP_LOGW(TAG, "  falldown_blind_zone is configured but NOT sent to radar — "
+                  "SubID 0x0180 is not in stock's cloud-attr dispatch. No-op.");
+  }
+  if (fall_overtime_sensor_ != nullptr) {
+    ESP_LOGW(TAG, "  fall_overtime sensor is deprecated — radar does not emit "
+                  "a fall-overtime event on SubID 0x0135 or 0x0136. Sensor will "
+                  "remain 'unknown'.");
   }
 }
 
