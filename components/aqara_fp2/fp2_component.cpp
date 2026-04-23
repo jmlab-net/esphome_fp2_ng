@@ -86,7 +86,7 @@ void FP2Component::publish_mode_scoped_sensor_reset_(uint8_t scene_mode) {
 
   if (!new_is_sleep) {
     if (sleep_presence_sensor_ != nullptr)   sleep_presence_sensor_->publish_state(false);
-    if (sleep_state_sensor_ != nullptr)      sleep_state_sensor_->publish_state("none");
+    if (sleep_state_sensor_ != nullptr)      sleep_state_sensor_->set_has_state(false);
     if (heart_rate_sensor_ != nullptr)       heart_rate_sensor_->publish_state(NAN);
     if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(NAN);
     if (heart_rate_dev_sensor_ != nullptr)   heart_rate_dev_sensor_->publish_state(NAN);
@@ -519,7 +519,7 @@ void FP2Component::check_sleep_quiet_timeout_() {
     sleep_presence_sensor_->publish_state(false);
   }
   if (sleep_state_sensor_ != nullptr) {
-    sleep_state_sensor_->publish_state("none");
+    sleep_state_sensor_->set_has_state(false);
   }
   if (heart_rate_sensor_ != nullptr) {
     heart_rate_sensor_->publish_state(NAN);
@@ -803,7 +803,7 @@ void FP2Component::check_initialization_() {
     if (people_count_sensor_ != nullptr) people_count_sensor_->publish_state(0);
     if (fall_detection_sensor_ != nullptr) fall_detection_sensor_->publish_state(false);
     if (!have_fresh_vitals) {
-      if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->publish_state("none");
+      if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->set_has_state(false);
       if (sleep_presence_sensor_ != nullptr) sleep_presence_sensor_->publish_state(false);
     }
 
@@ -1337,7 +1337,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 }
                 // Clear sleep-related sensors
                 if (sleep_state_sensor_ != nullptr) {
-                    sleep_state_sensor_->publish_state("none");
+                    sleep_state_sensor_->set_has_state(false);
                 }
                 if (sleep_presence_sensor_ != nullptr) {
                     sleep_presence_sensor_->publish_state(false);
