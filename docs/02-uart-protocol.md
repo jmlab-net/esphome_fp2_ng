@@ -184,9 +184,9 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
 | 0x0155 | PEOPLE_COUNTING | BLOB2(7B) | R→E | Y | Fall/people data: `[ZoneID:1][Count:2 BE][Ontime:4 BE]`. Non-zero ontime = fall. |
-| 0x0158 | PEOPLE_COUNT_REPORT_ENABLE | BOOL | E→R | Y | Enable count reports |
-| 0x0162 | PEOPLE_NUMBER_ENABLE | BOOL | E→R | Y | Enable number tracking |
-| 0x0163 | TARGET_TYPE_ENABLE | BOOL | E→R | Y | AI person detection |
+| 0x0158 | PEOPLE_COUNT_REPORT_ENABLE | BOOL | E→R | Y | **INVERTED SEMANTICS — see [Inverted-semantic attributes](#inverted-semantic-attributes) below. Send FALSE.** |
+| 0x0162 | PEOPLE_NUMBER_ENABLE | BOOL | E→R | Y | **INVERTED SEMANTICS — send FALSE.** |
+| 0x0163 | TARGET_TYPE_ENABLE | BOOL | E→R | Y | **INVERTED SEMANTICS — send FALSE.** |
 | 0x0164 | REALTIME_PEOPLE | UINT32 | R→E | Y | Real-time total person count |
 | 0x0165 | ONTIME_PEOPLE_NUMBER | UINT32 | R→E | Y | Periodic total person count |
 | 0x0166 | REALTIME_COUNT | UINT32 | R→E | Y | Real-time count (logged) |
@@ -197,7 +197,7 @@ Status: Y = implemented, P = partial (defined but not fully handled), N = not im
 | SubID | Name | Type | Dir | Status | Description |
 |-------|------|------|-----|--------|-------------|
 | 0x0154 | TARGET_POSTURE | UINT16 | R→E | Y | `[zone_id<<8\|posture]` — per-zone posture (0=none,1=standing,2=sitting,3=lying) |
-| 0x0157 | POSTURE_REPORT_ENABLE | BOOL | E→R | P | Enable posture reporting (stalls queue — commented out) |
+| 0x0157 | POSTURE_REPORT_ENABLE | BOOL | E→R | Y | **INVERTED SEMANTICS — send FALSE. See below.** |
 | 0x0172 | DWELL_TIME_ENABLE | BOOL | E→R | P | Dwell tracking (disabled in init) |
 | 0x0173 | WALK_DISTANCE_ENABLE | BOOL | E→R | P | Walking distance (disabled in init) |
 | 0x0174 | WALK_DISTANCE_ALL | UINT32 | R→E | N | Walking distance (converted to float) |
@@ -293,6 +293,52 @@ produce metres.
 | 0x0178 | OVERHEAD_HEIGHT | UINT16 | E→R | Ceiling height for spatial calibration |
 | 0x0179 | FALL_DELAY_TIME | UINT16 | E→R | Delay before confirming fall event |
 | 0x0180 | FALLDOWN_BLIND_ZONE | BLOB2(40B) | E→R | Fall detection exclusion zones (same grid format) |
+
+### Inverted-semantic attributes
+
+Four `*_REPORT_ENABLE` BOOL attributes have **counter-intuitive semantics**:
+setting them to `TRUE` does *not* enable reports — it switches the radar
+into an alternate compact output format that **suppresses** the standard
+`0x0103` (motion), `0x0104` (presence) and `0x0155` (people counting) streams.
+
+| SubID | Name | Send |
+|-------|------|------|
+| `0x0158` | PEOPLE_COUNT_REPORT_ENABLE | **FALSE** |
+| `0x0162` | PEOPLE_NUMBER_ENABLE | **FALSE** |
+| `0x0163` | TARGET_TYPE_ENABLE | **FALSE** |
+| `0x0157` | POSTURE_REPORT_ENABLE | **FALSE** |
+
+Stock Aqara sends all four as FALSE during Zone Detection setup. Evidence
+from the upstream RE repo (`hansihe/AqaraPresenceSensorFP2ReverseEngineering`,
+`decoded_conf_zone.txt`) — a live packet capture of the Aqara app
+configuring a fresh FP2:
+
+```
+Seq:11  WRT> people_counting_report_enable (0158) = FALSE
+Seq:12  WRT> people_number_enable         (0162) = FALSE
+Seq:13  WRT> target_type_enable           (0163) = FALSE
+Seq:14  <REP motion_detection             (0103) = 0    ← streams BEGIN
+Seq:16  <REP presence_detection           (0104) = 1
+```
+
+The `0x0103`/`0x0104` emissions start **immediately after the FALSE
+writes**. When these were accidentally sent as `TRUE` in this driver
+(Jan–Apr 2026), the radar would ACK the writes with no error and then
+only emit the alternate `0x0117` target-tracking stream — Zone Detection
+appeared to "work" superficially but `global_presence`, `global_motion`
+and `people_count` stayed stuck at their initial off/0 values.
+
+**Symptom to recognise:** Zone Detection silent on `global_presence` /
+`global_motion` / `people_count` while `target_tracking` (0x0117) shows
+data. Check init-burst values for these four BOOLs before anything else.
+
+Likely internal meaning (speculation): these toggle between
+"application report format" (all on = detailed per-target with type /
+posture / count classification, for Aqara's Zigbee cluster) and "default
+legacy UART format" (all off = simple 0x0103/0x0104/0x0155). The Aqara
+app only ever uses the legacy UART channels.
+
+Fixed in `d7e8c9a` (2026-04-23).
 
 ### Temperature
 
