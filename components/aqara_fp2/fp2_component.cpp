@@ -66,8 +66,10 @@ void FP2Component::setup() {
   operating_mode_pref_ = global_preferences->make_preference<uint8_t>(fnv1_hash("fp2_operating_mode"));
   uint8_t saved_mode = 0;
   if (operating_mode_pref_.load(&saved_mode) && saved_mode < 4) {
-    sleep_mode_active_ = (saved_mode == 2);  // Sleep Monitoring
-    ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d)", saved_mode, sleep_mode_active_);
+    sleep_mode_active_ = (saved_mode == 2);       // Sleep Monitoring
+    fall_only_mode_active_ = (saved_mode == 1);   // Fall Detection (no 0x0117 stream)
+    ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d fall_only=%d)",
+             saved_mode, sleep_mode_active_, fall_only_mode_active_);
   }
 
   // Look up the radar firmware staging partition by name. Pointer may be
@@ -187,7 +189,13 @@ void FP2Component::set_operating_mode(const std::string &mode) {
     return;
   }
 
-  ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d)", mode.c_str(), scene_mode, sleep);
+  // Track "fall only, no positioning" so the init burst and the
+  // pre-WORK_MODE WRITE below can disable 0x0117 target streaming
+  // for Fall Detection mode while leaving it on for Fall + Positioning.
+  fall_only_mode_active_ = (mode == "Fall Detection");
+
+  ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d, fall_only=%d)",
+           mode.c_str(), scene_mode, sleep, fall_only_mode_active_);
   sleep_mode_active_ = sleep;
 
   // Save mode index to flash for restore on boot
@@ -253,6 +261,17 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   // uStack_36 = 4 before FUN_400e7e20 frame-build). Sending as UINT8 gets
   // rejected by the radar's attribute dispatcher with a type mismatch.
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);  // BOOL
+
+  // Fall-mode differentiation: Fall Detection suppresses the 0x0117
+  // target-position stream; Fall + Positioning enables it. Write
+  // LOCATION_REPORT_ENABLE (0x0112) before WORK_MODE so it's captured
+  // in the flash-save that WORK_MODE triggers. Zone Detection and Sleep
+  // Monitoring leave this to the normal init burst.
+  if (scene_mode == 8) {
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE,
+                     !fall_only_mode_active_);  // BOOL: 0 for fall-only, 1 for +positioning
+  }
+
   // WORK_MODE write triggers flash save + radar self-restart
   enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, scene_mode);
 
@@ -505,12 +524,17 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // BOOL
     // SLEEP_REPORT_ENABLE is sent LAST — see end of init sequence.
     // A READ in the 0x01xx range triggers scene mode 3, which clears sleep_report_enable.
-    // Location reporting must stay enabled at the radar level — people counting
-    // depends on it internally. The Report Targets switch controls whether
-    // target data is published to the text sensor, not whether the radar tracks.
+    //
+    // LOCATION_REPORT_ENABLE (0x0112) — gates the 0x0117 target stream.
+    //   - Fall Detection mode: 0 (user wants fall events only, no positions)
+    //   - Fall + Positioning: 1 (user wants both)
+    //   - Zone Detection, Sleep Monitoring, unknown/default: 1 (tracking
+    //     is needed for people counting, zone inference, and the internal
+    //     state the radar uses for other sensors)
     // BOOL (type 0x04), not UINT8 — matches stock cloud handler at
     // FUN_400e4e7c which sets uStack_36=4. Sending as UINT8 gets rejected.
-    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);  // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE,
+                     !fall_only_mode_active_);  // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t)(dwell_time_enable_ ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE,

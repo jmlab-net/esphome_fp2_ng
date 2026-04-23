@@ -214,7 +214,7 @@ firmware images on the IWR6843AOP:
 | Zone Detection | 3 | FW1 (MSS zone detection) | General presence, tracking, per-zone counts |
 | Fall Detection | 8 | FW2 (3D people counting + fall ML) | Fall events, ceiling mount |
 | Sleep Monitoring | 9 | FW3 (vital signs + capon3d tracking) | Heart rate, respiration, sleep stage |
-| Fall + Positioning | 8 | FW2 | Same FW2 image with positioning data enabled |
+| Fall + Positioning | 8 | FW2 | Same FW2 image as Fall Detection. Differentiated at the ESP level by `LOCATION_REPORT_ENABLE` (0x0112): Fall Detection writes `false` (no 0x0117 stream), Fall + Positioning writes `true` (0x0117 target stream enabled). The driver writes this attribute before WORK_MODE so the flash-save captures the correct value. |
 
 Switching modes writes `WORK_MODE` (SubID 0x0116), which triggers the radar's
 MSS to flash-save its current config and self-restart. The secondary bootloader

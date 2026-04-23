@@ -447,7 +447,7 @@ All three DSS/application images share an **identical TI-RTOS/SYS-BIOS runtime**
 | **Zone Detection** | FW1 | Wall | Multi | Presence, motion, zones, basic people counting |
 | **Fall Detection** | FW2 | Ceiling | Single | Fall detection with DSP scoring and height estimation |
 | **Sleep Monitoring** | FW3 | Bedside | Single | Vital signs: heart rate, respiration, sleep state |
-| **Fall + Positioning** | FW2 | Ceiling | Single | Fall detection with real-time target streaming |
+| **Fall + Positioning** | FW2 | Ceiling | Single | Same FW2 image as Fall Detection, but the driver also writes `LOCATION_REPORT_ENABLE=1` so the radar streams 0x0117 target positions. Fall Detection alone writes `LOCATION_REPORT_ENABLE=0` to suppress that stream. Written before WORK_MODE so the flash-save captures the correct value atomically. |
 
 **Note:** The firmware-to-mode mapping is inferred from capabilities matching the app mode descriptions. No direct mapping table was found in the stock ESP32 firmware. The selection mechanism uses `SBL_WORK_MODE_OFFSET` in the radar's boot loader.
 

@@ -2,6 +2,35 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-23 — Differentiate Fall Detection vs Fall + Positioning
+
+Previously these two select-entity values mapped to identical radar
+config (both `scene_mode=8` with `LOCATION_REPORT_ENABLE=1`); the
+"Positioning" suffix was cosmetic. Now they behave differently:
+
+- **Fall Detection** → `LOCATION_REPORT_ENABLE=0` — radar suppresses
+  the 0x0117 target position stream. Fall events still flow on 0x0121.
+- **Fall + Positioning** → `LOCATION_REPORT_ENABLE=1` — fall events
+  plus live target positions.
+
+Implementation:
+
+- New `fall_only_mode_active_` bool in `FP2Component`, restored from
+  NVS on boot (set to true when saved mode_index is 1 / "Fall
+  Detection").
+- `set_operating_mode` updates the bool based on the mode string and,
+  for `scene_mode==8`, enqueues a `LOCATION_REPORT_ENABLE` WRITE
+  **before** the WORK_MODE WRITE so the flash-save captures the
+  correct value atomically — matching how sleep-zone params are
+  pre-staged before WORK_MODE=9.
+- The init burst at 45 s also consults the bool so re-init doesn't
+  flip the flag back to 1.
+
+Zone Detection and Sleep Monitoring are unchanged — they always
+leave `LOCATION_REPORT_ENABLE=1` (people counting and internal
+tracking depend on it).
+
+
 ## 2026-04-23 — Fall detection compliance audit and cleanup
 
 Ghidra audit of stock FW1 (`fp2_aqara_fw1.bin`) against the driver's
