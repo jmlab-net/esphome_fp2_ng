@@ -2,6 +2,297 @@
 
 Changes from the upstream [hansihe/esphome_fp2](https://github.com/hansihe/esphome_fp2).
 
+## 2026-04-23 — Mode-scoped sensor reset on mode change
+
+HA used to keep showing the last-seen heart_rate, sleep_state, or
+fall_detection values after switching to a mode that no longer emits
+them — e.g. leaving Sleep Monitoring for Zone Detection would leave
+HR, BR, sleep_state stale forever.
+
+New `publish_mode_scoped_sensor_reset_(scene_mode)` walks the sensor
+set and marks every entity the **new** mode won't populate:
+
+- Entering Zone Detection / Fall / Fall + Positioning → sleep_presence,
+  sleep_state, heart_rate, respiration_rate, heart_rate_deviation all
+  clear; HR ring buffer and vitals watermark zero out.
+- Entering Zone Detection / Sleep Monitoring → fall_detection and
+  fall_overtime clear.
+- Entering Sleep Monitoring → zone presence/motion/people-count/posture,
+  global motion, people_count, walking_distance, target_tracking all
+  clear (FW3 doesn't emit these).
+
+Called from `set_operating_mode()` on every user-initiated switch AND
+from the boot-time operating_mode restore path, so HA never briefly
+shows stale values from whichever mode the ESP last reported before a
+restart. Mode-agnostic sensors (global_presence, radar_temperature,
+radar_state, radar_software_version) are never touched by the reset.
+
+Sensors the new mode does produce will be re-populated by their
+normal handlers within seconds of the radar restart + init.
+
+## 2026-04-23 — Differentiate Fall Detection vs Fall + Positioning
+
+Previously these two select-entity values mapped to identical radar
+config (both `scene_mode=8` with `LOCATION_REPORT_ENABLE=1`); the
+"Positioning" suffix was cosmetic. Now they behave differently:
+
+- **Fall Detection** → `LOCATION_REPORT_ENABLE=0` — radar suppresses
+  the 0x0117 target position stream. Fall events still flow on 0x0121.
+- **Fall + Positioning** → `LOCATION_REPORT_ENABLE=1` — fall events
+  plus live target positions.
+
+Implementation:
+
+- New `fall_only_mode_active_` bool in `FP2Component`, restored from
+  NVS on boot (set to true when saved mode_index is 1 / "Fall
+  Detection").
+- `set_operating_mode` updates the bool based on the mode string and,
+  for `scene_mode==8`, enqueues a `LOCATION_REPORT_ENABLE` WRITE
+  **before** the WORK_MODE WRITE so the flash-save captures the
+  correct value atomically — matching how sleep-zone params are
+  pre-staged before WORK_MODE=9.
+- The init burst at 45 s also consults the bool so re-init doesn't
+  flip the flag back to 1.
+
+Zone Detection and Sleep Monitoring are unchanged — they always
+leave `LOCATION_REPORT_ENABLE=1` (people counting and internal
+tracking depend on it).
+
+
+## 2026-04-23 — Fall detection compliance audit and cleanup
+
+Ghidra audit of stock FW1 (`fp2_aqara_fw1.bin`) against the driver's
+fall-detection code. Finding: only one of the four fall SubIDs we
+WRITE is genuinely in stock's protocol surface; the two "fall overtime"
+SubIDs we RX are not fall events at all.
+
+**What's real in stock (confirmed by dispatch-table/handler addresses):**
+
+| SubID | Direction | dtype | Stock handler | Notes |
+|---|---|---|---|---|
+| 0x0123 FALL_SENSITIVITY | ESP→radar | U8 | `HandleCloud_Write_Dispatcher` idx 5 @ 0x400e36e1 | Clamped 0..3 (`bltui a10, 0x4`) |
+| 0x0121 FALL_DETECTION_RESULT | radar→ESP | U8 | RAM dispatch 0x3ffb13a0 → 0x400e5388 | FW2 emit at radar 0x0001db92 |
+| 0x0124 | radar→ESP | U8 | fall_overtime_report_period ack | Config echo only, cosmetic |
+
+**What was invented on our side (not on the wire):**
+
+- `FALL_OVERTIME_PERIOD = 0x0134` BLOB2 U32 — WRITE removed. FW1 MSS
+  dispatcher routes 0x0134 to its unknown-SubID error path (verified
+  via `FUN_00009718` control flow — lands at 0x9BFC: `movw r2, #0x59f;
+  b 0x9db0`). Confirmed dead on the wire.
+- `FALL_OVERTIME_DETECTION = 0x0135` / `FALL_OVERTIME_REPORT = 0x0136` —
+  not fall events on the ESP side either. 0x0135's stock handler
+  (0x400e11ac) reads a u16 calibration/version value ("13.25.85");
+  0x0136's stock handler (0x400df760) is a 3-byte stub. Our
+  `fall_overtime_sensor_` was wired to SubIDs that never fire.
+
+**Correction (radar-side verification):** Two SubIDs we initially removed
+are actually real — the stock ESP simply doesn't use them, but the
+**radar MSS accepts them directly**:
+
+- `FALL_DELAY_TIME = 0x0179` U16 — FW1 MSS handler at `0x00026200`
+  decodes u16 payload, stores to config offset `+0x290`, logs
+  `"fall_delay_time: %d\n"`. Functional WRITE. **Re-instated.**
+- `FALLDOWN_BLIND_ZONE = 0x0180` BLOB2 40B — FW1 MSS handler at
+  `0x0001da24` memcmp's 40 bytes at config `+0x1c`, memcpy's payload
+  if changed, sets update flags at `+0xa4`/`+0xa5`. Functional WRITE.
+  **Re-instated.**
+
+Upstream corroboration: hansihe's PROTOCOL.md lists 0x0134/0x0135 as
+RW attributes, and `decoded_conf_zone.txt` in the same repo captured
+a live stock trace of `fall_detection_sensitivity (0123) = 1` during
+normal Aqara-app setup — so "1" is the real stock-in-practice default
+(driver default matches).
+
+### Code changes
+
+- **Remove three dead WRITEs** (0x0134, 0x0179, 0x0180) from the init
+  burst. YAML options retained as no-ops for config backwards-compat
+  (existing YAMLs don't break); `dump_config` warns when each is set.
+- **Neuter the 0x0135 / 0x0136 RX handlers** — no longer publish to
+  `fall_overtime_sensor_`. Sensor entity retained but will now stay
+  "unknown"; warning logged at setup if configured.
+- **Clamp `fall_detection_sensitivity` to 0..3** in the setter, matching
+  stock's radar-side validation (`bltui a10, 0x4` in
+  `HandleCloud_Write_Dispatcher`). Default stays at **1** — this is the
+  value captured in a live stock trace (`decoded_conf_zone.txt` in the
+  upstream RE repo: `WRT> fall_detection_sensitivity (0123) Seq:10 : 1`),
+  reflecting what the Aqara app writes during normal setup. The
+  factory-fresh RAM value is 0 (zero-init), but no FP2 in field use
+  runs with 0 — the app always writes 1 after pairing.
+- Clean up 0x0121 comment — drop unverified "type A / type B"
+  interpretation; treat as raw u8 boolean.
+- Fix stale comment claiming "Actual fall detection uses SubID 0x0306"
+  (it was fiction; no firmware emits 0x0306).
+
+
+## 2026-04-22 — Sleep Monitoring working end-to-end: `emulate_stock` flag + vitals on SubID 0x0159
+
+### Definitive fix: stop the init burst in Sleep Monitoring, parse the right SubID
+
+Two separate issues were both blocking vitals output; together they explain
+every previous symptom.
+
+**1. Our init WRITE burst was disrupting FW3 DSS track allocation.**
+
+Ghidra deep-trace of `fp2_aqara_fw1.bin` (2026-04-22) confirmed the stock ESP
+firmware emits **zero UART WRITEs** on radar-ready:
+- `boot_init_main @ 0x400de62c` loads NVS, allocates buffers, publishes cloud
+  attrs — does not touch UART
+- `radar_ready_init_state @ 0x400e6350` (one-shot post-boot init) emits no
+  WRITEs, only sets a "cloud channel ready" latch
+- `after_radar_ready_poll @ 0x400e62b0` (triggered on radar heartbeat) calls
+  `lazy_read_and_publish_state @ 0x400e5c50` which emits **READs** (opcode=1)
+  for 0x0102 / 0x0116 / 0x0128 only when the cached byte is zero
+- All radar WRITEs are forwarded from cloud-initiated ZCL writes via
+  `HandleCloud_Write_Dispatcher @ 0x400e3399`
+
+Our driver's 15+ WRITE init burst (MONITOR_MODE, FALL_SENSITIVITY,
+LOCATION_REPORT_ENABLE, THERMO_EN, sleep-zone params, etc.) has no stock
+analog, and its timing relative to FW3's DSS boot was breaking GTrack's
+ability to allocate a track.
+
+Added `emulate_stock` YAML flag. Gated the init burst behind
+`!(emulate_stock_ && sleep_mode_active_)` — Zone and Fall modes still get the
+full init (empirically they need it, and don't hit the GTrack issue); Sleep
+Monitoring skips the burst and keeps whatever config is in radar flash from
+the previous WORK_MODE save.
+
+**2. Vitals were being parsed from the wrong SubID.**
+
+Prior driver code expected HR and BR on SubID 0x0117 in FW3, as a 100×-scaled
+u16 big-endian pair inside a 14-byte per-target block. Decompiling
+`vitals_hr_br_emitter @ 0x00006c84` in `fp2_radar_vitalsigns.bin` showed the
+function emits **both** 0x0117 (at `0x00006e2c`) and 0x0159 (at `0x0000701a`)
+— but:
+
+- 0x0117 is gated on `config+0xb8 == 1` (LOCATION_REPORT_ENABLE), AND
+  `target_count > 0`, AND a frame counter `+0x28 > 15`, AND motion/state
+  flags non-zero. For a stationary sleeper the counter rarely climbs and the
+  state flags rarely align — 0x0117 almost never fires.
+- 0x0159 is **not gated on +0xb8**. It fires every ~6 s whenever GTrack has
+  a track. It carries a 12-byte payload: `[tid][0][0][HR_bpm u8][0][HR_conf]
+  [BR_bpm u8][0][BR_conf][sleep_state][sleep_stage][event]`. HR and BR are
+  **direct u8 bpm, not scaled**.
+
+Switched the driver's `AttrId::SLEEP_DATA` handler to decode 0x0159's bytes
+[3] and [6] directly and publish to `heart_rate_sensor_` /
+`respiration_rate_sensor_`. The old 0x0117 FW3 branch is retained as
+diagnostic-only logging (so we can still observe it if it does fire).
+
+**3. Heart rate deviation is not emitted by the radar.**
+
+The `heartDev` and `breathDev` slots in the 0x0117 15-byte payload are always
+zero in FW3 emit. 0x0159 has no deviation field at all. Implemented
+`heart_rate_deviation` as an ESP-side rolling population standard deviation
+over the last 10 HR samples from 0x0159 (~60 s at 6 s cadence). Cleared on
+presence loss.
+
+### Workflow
+
+Setup recipe now in [04-esphome-component.md](04-esphome-component.md) and
+[../README.md](../README.md#sleep-monitoring-setup):
+
+1. `emulate_stock: true` in YAML, flash
+2. Cycle Operating Mode: Zone Detection → wait ~15 s → Sleep Monitoring
+3. Climb into bed with deliberate motion (GTrack needs centroid radial
+   velocity > 0.1 m/s to allocate the track — a person who lies still from
+   a distance won't get tracked)
+4. Once allocated, `stateParam sleep2free=9000` keeps the track alive for
+   ~7.5 min of stillness, so ordinary sleep behaviour works fine
+
+### Code changes
+
+- `components/aqara_fp2/__init__.py`: add `CONF_EMULATE_STOCK` schema entry,
+  wire setter
+- `components/aqara_fp2/fp2_component.h`: `emulate_stock_` member, HR ring
+  buffer (`HR_WINDOW_SIZE_=10`), setter
+- `components/aqara_fp2/fp2_component.cpp`:
+  - Gate init burst on `!(emulate_stock_ && sleep_mode_active_)`
+  - Remove the vestigial LOCATION_REPORT_ENABLE=1 pre-WORK_MODE WRITE that
+    was added for the 0x0117 path (kept only because 0x0159 isn't gated on
+    `+0xb8`)
+  - Rewrite `AttrId::SLEEP_DATA` handler: parse tid/HR/BR/confs/state/stage/
+    event from 0x0159 byte layout; publish HR and BR; update the HR ring
+    buffer and publish population std-dev to `heart_rate_dev_sensor_`
+  - `handle_location_tracking_report_` FW3 branch: stop publishing HR/BR
+    sensor values; keep diagnostic logging so 0x0117 is still observable
+  - `dump_config`: add the `Emulate Stock` line
+- Commits: `52c3e18`, `d73143c` (superseded), `59cdebe`, `1dd817f`
+
+### Verification
+
+An overnight soak-test confirmed continuous HR, BR, and HR-deviation output
+across a full ~8 h sleep window:
+
+- **Heart rate** — resting baseline in the high 50s / low 60s bpm, with
+  typical sleep-cycle drift down into the low 50s during deep sleep and
+  transient rises into the 70s on stirring events. Typical resting adult.
+- **Respiration rate** — steady around 14-18 br/min through most of the
+  night, dropping into the low teens during deep-sleep phases. Textbook.
+- **Heart-rate deviation** — near-zero (< 1 bpm std-dev) during stable
+  sleep; rose to 3-5 bpm during HR transitions and returned to baseline
+  within a minute or two.
+
+Track-loss gaps correlated with expected re-orientation events (rolling out
+of the bed region, etc.) and the track was re-allocated cleanly on return.
+No driver-side errors or dropouts.
+
+### Later 2026-04-22 — Sleep mode presence-state lifecycle
+
+Follow-on work after the vitals fix to make `global_presence`,
+`sleep_presence`, and the vitals sensors behave correctly through the
+full in-bed → out-of-bed → empty-room cycle.
+
+- **Cross-trigger** — any occupancy signal (0x0159 frame, 0x0167=1,
+  0x0171=1) asserts `global_presence` ON and stamps a watermark. Covers
+  the HR=0 FFT warm-up phase at mode-entry (the first ~20-30 s after FW3
+  boot) by triggering on any of the three signal types, not just HR>0.
+
+- **0x0104=0 suppression in sleep mode** — FW3 can emit 0x0104=0 for a
+  stationary sleeper even while GTrack has an active track and 0x0159
+  is streaming. If the watermark is < 30 s old, the clear cascade is
+  dropped rather than publishing false.
+
+- **45 s re-init preservation** — the second init (post-boot) was
+  unconditionally publishing `global_presence`, `sleep_presence`, and
+  `sleep_state` to OFF/none as part of a "reset state" block. Observed
+  live: user in bed, sleep_presence cross-triggered ON at t=32 s, both
+  sensors flattened at t=45 s. Fixed by skipping the OFF publishes for
+  those three sensors when the watermark is fresh.
+
+- **Quiet-timeout auto-clear** — once GTrack releases the track, FW3
+  stops emitting any presence signal (no 0x0159, 0x0167, 0x0171, 0x0104
+  — only the 0x0102 heartbeat). Sensors would otherwise stay latched at
+  their last-seen ON value forever. New loop-tick check clears all
+  sleep-mode sensors after 60 s of radar silence. Tunable via
+  `SLEEP_QUIET_TIMEOUT_MS_`.
+
+- **Temperature READ response dispatch** — FW3 does not push unsolicited
+  0x0128 temperature reports. Our init-time READ returns a value, but the
+  op=4 RESPONSE handler previously only logged `[READBACK]` without
+  calling the per-SubID publisher. Added a small switch so TEMPERATURE
+  responses also populate `radar_temperature`. Still one-shot per mode
+  cycle (no periodic refresh).
+
+- **Documentation:** status-LED optical cross-talk with the OPT3001
+  ambient light sensor documented in `01-hardware.md` and
+  `04-esphome-component.md`. Stock firmware's `lux_acc_led_onoff`
+  dynamically dims the LED against ambient lux; the ESPHome driver does
+  not replicate it.
+
+Commits: `7a05009`, `3a6614e`, `0ee6742`, `239e24f`, `56f986e`,
+`e7e5a4e`, `2188c9c`.
+
+### Superseded (preserved for history)
+
+The 2026-04-21 entries below chase two wrong theories that were ruled out:
+GTrack velocity gate (partially right — the gate exists, but gating it was
+downstream of the real problem) and SLEEP_REPORT_ENABLE=1/heartbeat 0x0203
+sync (SLEEP_REPORT_ENABLE turned out to be a pure no-op in FW3; 0x0203 sync
+is useful but doesn't unblock vitals on its own). The actual blocker was
+our own init burst + wrong SubID decode, documented above.
+
 ## 2026-04-21 — Sleep Monitoring fix: SLEEP_REPORT_ENABLE=1, heartbeat 0x0203 sync
 
 ### Actual root cause found via stock ESP32 firmware diff

@@ -377,7 +377,13 @@ public:
   void set_left_right_reverse(bool val) { left_right_reverse_ = val; }
 
   void set_fall_detection_sensitivity(uint8_t val) {
-    fall_detection_sensitivity_ = val;
+    // Stock radar clamps FALL_SENSITIVITY to 0..3 in the cloud-write
+    // handler (verified via Ghidra: `bltui a10, 0x4, …` in
+    // HandleCloud_Write_Dispatcher). Values >= 4 are silently dropped
+    // by the radar. Clamp here so the YAML value matches the radar's
+    // accepted range and we never waste a WRITE on a value that will
+    // be rejected.
+    fall_detection_sensitivity_ = val > 3 ? 3 : val;
   }
   void set_fall_overtime_period(uint32_t val) {
     fall_overtime_period_ = val;
@@ -630,6 +636,17 @@ protected:
   void check_initialization_();
   void publish_radar_state_(const char *state);
 
+  // Mark sensors N/A (NaN/false/"none") for entities the new mode
+  // won't produce. Called from set_operating_mode() on every mode
+  // change so HA never shows stale values from the previous mode.
+  void publish_mode_scoped_sensor_reset_(uint8_t scene_mode);
+
+  // Quiet-timeout auto-clear for Sleep Monitoring. FW3 stops emitting
+  // state entirely once GTrack releases the track, so we need to infer
+  // "room empty" from radar silence.
+  void check_sleep_quiet_timeout_();
+  static constexpr uint32_t SLEEP_QUIET_TIMEOUT_MS_ = 60000U;   // 60 s
+
   aqara_fp2_accel::AqaraFP2Accel *fp2_accel_{nullptr};
 
   GPIOPin *reset_pin_{nullptr};
@@ -639,6 +656,11 @@ protected:
   bool emulate_stock_{false}; // Skip init WRITE burst — stock ESP sends no WRITEs at init, only forwards cloud ZCL writes
   bool global_presence_active_{false};
   uint32_t last_heartbeat_millis_{0};
+  // millis() of last sleep-occupancy signal (any 0x0159 frame, 0x0167 ON,
+  // or 0x0171 ON). Used to suppress 0x0104=0 clear cascade while a sleeper
+  // is being tracked — including the first ~30 s after FW3 boot when HR is
+  // still 0 because FFT windows haven't filled.
+  uint32_t last_vitals_millis_{0};
 
   // Configuration State
   uint8_t mounting_position_{0x01}; // Default Wall
@@ -675,6 +697,11 @@ protected:
   FP2OperatingModeSelect *operating_mode_select_{nullptr};
   FP2MountingPositionSelect *mounting_position_select_{nullptr};
   bool sleep_mode_active_{false};
+  // True when the saved mode is "Fall Detection" (index 1). False for
+  // everything else, including "Fall + Positioning" (index 3). Gates
+  // LOCATION_REPORT_ENABLE — Fall Detection suppresses 0x0117 target
+  // streaming, Fall + Positioning enables it.
+  bool fall_only_mode_active_{false};
   // Incrementing u8 counter sent as the value of WRITE 0x0203 on every
   // heartbeat while in sleep mode. Mirrors stock ESP32 behavior at
   // heartbeat_config_sync (fp2_aqara_fw1.bin @ 0x400decd4).
@@ -775,6 +802,11 @@ protected:
   sensor::Sensor *respiration_rate_sensor_{nullptr};
   sensor::Sensor *heart_rate_dev_sensor_{nullptr};
   sensor::Sensor *walking_distance_sensor_{nullptr};
+
+  // Rolling HR window for deviation (std dev) calculation. The radar emits
+  // HR every ~6s via SubID 0x0159; 10 samples ≈ 60s of data.
+  static constexpr size_t HR_WINDOW_SIZE_ = 10;
+  std::deque<uint8_t> hr_window_;
 
   // Map Configuration (compile-time generated)
   std::string map_config_json_;

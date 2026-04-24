@@ -66,6 +66,66 @@ void FP2Component::publish_radar_state_(const char *state) {
   }
 }
 
+void FP2Component::publish_mode_scoped_sensor_reset_(uint8_t scene_mode) {
+  // Mark sensors N/A (NaN for numeric, false for binary, "none" for
+  // text) when they're not applicable to the newly-entered mode.
+  // Sensors the new mode DOES emit will be re-populated by the normal
+  // handlers within seconds of radar restart + init. Called from
+  // set_operating_mode().
+  //
+  // Mode-to-sensor matrix (based on which radar FW emits which SubIDs):
+  //
+  //   scene_mode  = 3  (Zone Detection,       FW1)
+  //               = 8  (Fall Detection / Fall + Positioning, FW2)
+  //               = 9  (Sleep Monitoring,     FW3)
+  //
+  //   Sleep/vitals sensors — emitted only by FW3 (mode 9):
+  //     sleep_presence (0x0167), sleep_state (0x0161),
+  //     heart_rate / respiration_rate / heart_rate_deviation (0x0159)
+  //
+  //   Fall sensors — emitted only by FW2 (mode 8 variants):
+  //     fall_detection (0x0121)
+  //     fall_overtime (deprecated; never populates regardless of mode)
+  //
+  //   Zone/motion/tracking/counting/posture — common to FW1/FW2, not FW3.
+  //
+  // global_presence, radar_temperature, radar_state, radar_software_version
+  // are mode-agnostic and never cleared here.
+  const bool new_is_sleep = (scene_mode == 9);
+  const bool new_is_fall  = (scene_mode == 8);
+  const bool new_is_zone  = (scene_mode == 3);
+
+  if (!new_is_sleep) {
+    if (sleep_presence_sensor_ != nullptr)   sleep_presence_sensor_->publish_state(false);
+    if (sleep_state_sensor_ != nullptr)      sleep_state_sensor_->set_has_state(false);
+    if (heart_rate_sensor_ != nullptr)       heart_rate_sensor_->publish_state(NAN);
+    if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(NAN);
+    if (heart_rate_dev_sensor_ != nullptr)   heart_rate_dev_sensor_->publish_state(NAN);
+    hr_window_.clear();
+    last_vitals_millis_ = 0;
+  }
+
+  if (!new_is_fall) {
+    if (fall_detection_sensor_ != nullptr) fall_detection_sensor_->publish_state(false);
+    if (fall_overtime_sensor_ != nullptr)  fall_overtime_sensor_->publish_state(false);
+  }
+
+  if (!new_is_zone && !new_is_fall) {
+    // No presence/motion/counting/posture in Sleep mode — FW3 doesn't
+    // emit 0x0103/0x0115/0x0154/0x0155/0x0174/0x0175 for zones.
+    for (auto &z : zones_) {
+      z->publish_presence(false);
+      z->publish_motion(false);
+      if (z->posture_sensor != nullptr)          z->posture_sensor->publish_state("none");
+      if (z->zone_people_count_sensor != nullptr) z->zone_people_count_sensor->publish_state(0);
+    }
+    if (global_motion_sensor_ != nullptr)     global_motion_sensor_->publish_state(false);
+    if (people_count_sensor_ != nullptr)      people_count_sensor_->publish_state(0);
+    if (walking_distance_sensor_ != nullptr)  walking_distance_sensor_->publish_state(NAN);
+    if (target_tracking_sensor_ != nullptr)   target_tracking_sensor_->set_has_state(false);
+  }
+}
+
 void FP2Component::setup() {
   // Reset internal state
   waiting_for_ack_attr_id_ = AttrId::INVALID;
@@ -77,8 +137,10 @@ void FP2Component::setup() {
   operating_mode_pref_ = global_preferences->make_preference<uint8_t>(fnv1_hash("fp2_operating_mode"));
   uint8_t saved_mode = 0;
   if (operating_mode_pref_.load(&saved_mode) && saved_mode < 4) {
-    sleep_mode_active_ = (saved_mode == 2);  // Sleep Monitoring
-    ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d)", saved_mode, sleep_mode_active_);
+    sleep_mode_active_ = (saved_mode == 2);       // Sleep Monitoring
+    fall_only_mode_active_ = (saved_mode == 1);   // Fall Detection (no 0x0117 stream)
+    ESP_LOGI(TAG, "Restored operating mode index=%d (sleep=%d fall_only=%d)",
+             saved_mode, sleep_mode_active_, fall_only_mode_active_);
   }
 
   // Restore mount position from flash. Overrides the YAML-compiled default
@@ -308,8 +370,20 @@ void FP2Component::set_operating_mode(const std::string &mode) {
     return;
   }
 
-  ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d)", mode.c_str(), scene_mode, sleep);
+  // Track "fall only, no positioning" so the init burst and the
+  // pre-WORK_MODE WRITE below can disable 0x0117 target streaming
+  // for Fall Detection mode while leaving it on for Fall + Positioning.
+  fall_only_mode_active_ = (mode == "Fall Detection");
+
+  ESP_LOGI(TAG, "Operating mode: %s (scene=%d, sleep=%d, fall_only=%d)",
+           mode.c_str(), scene_mode, sleep, fall_only_mode_active_);
   sleep_mode_active_ = sleep;
+
+  // Clear sensors that the new mode won't produce, so HA doesn't keep
+  // showing stale values from the previous mode. For any sensor the
+  // new mode DOES produce, the radar will re-emit and our handlers
+  // will re-publish a live value within seconds.
+  publish_mode_scoped_sensor_reset_(scene_mode);
 
   // Save mode index to flash for restore on boot
   uint8_t mode_index = 0;
@@ -354,16 +428,6 @@ void FP2Component::set_operating_mode(const std::string &mode) {
     }
   }
 
-  // LOCATION_REPORT_ENABLE=1 opens FW3's +0xb8 emit gate for SubID 0x0117
-  // (HR/BR payload). With emulate_stock=true the init burst no longer sets
-  // this, so we must set it explicitly before WORK_MODE=9 triggers the
-  // flash save. Without it, FW3 boots with +0xb8=0 and 0x0117 never emits —
-  // the driver's HR/BR sensors stay NAN even though 0x0159 sleep-staging
-  // frames (which aren't gated on +0xb8) do arrive.
-  if (sleep) {
-    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);  // BOOL
-  }
-
   // Write sleep enable flag to radar RAM.
   //
   // 2026-04-21 CORRECTION (supersedes earlier "value=9" comment):
@@ -384,6 +448,17 @@ void FP2Component::set_operating_mode(const std::string &mode) {
   // uStack_36 = 4 before FUN_400e7e20 frame-build). Sending as UINT8 gets
   // rejected by the radar's attribute dispatcher with a type mismatch.
   enqueue_command_(OpCode::WRITE, AttrId::SLEEP_REPORT_ENABLE, sleep);  // BOOL
+
+  // Fall-mode differentiation: Fall Detection suppresses the 0x0117
+  // target-position stream; Fall + Positioning enables it. Write
+  // LOCATION_REPORT_ENABLE (0x0112) before WORK_MODE so it's captured
+  // in the flash-save that WORK_MODE triggers. Zone Detection and Sleep
+  // Monitoring leave this to the normal init burst.
+  if (scene_mode == 8) {
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE,
+                     !fall_only_mode_active_);  // BOOL: 0 for fall-only, 1 for +positioning
+  }
+
   // WORK_MODE write triggers flash save + radar self-restart
   enqueue_command_(OpCode::WRITE, (AttrId) 0x0116, scene_mode);
 
@@ -491,13 +566,21 @@ void FP2Component::loop() {
     if (server != nullptr && server->is_connected()) {
       uint8_t mode = 0;
       static const char *NAMES[] = {"Zone Detection", "Fall Detection", "Sleep Monitoring", "Fall + Positioning"};
+      static const uint8_t SCENES[] = {3, 8, 9, 8};
+      uint8_t resolved = 0;
       if (operating_mode_pref_.load(&mode) && mode < 4) {
         operating_mode_select_->publish_state(NAMES[mode]);
         ESP_LOGI(TAG, "Published restored operating mode: %s", NAMES[mode]);
+        resolved = mode;
       } else {
         operating_mode_select_->publish_state(NAMES[0]);
         ESP_LOGI(TAG, "No saved mode, defaulting to Zone Detection");
+        resolved = 0;
       }
+      // Gate mode-scoped sensors to the restored mode from the start,
+      // so HA doesn't briefly show stale values from whichever mode
+      // ESPHome last reported before the restart.
+      publish_mode_scoped_sensor_reset_(SCENES[resolved]);
       operating_mode_published_ = true;
     }
   }
@@ -592,6 +675,51 @@ void FP2Component::loop() {
 
   check_initialization_();
   process_command_queue_();
+  check_sleep_quiet_timeout_();
+}
+
+void FP2Component::check_sleep_quiet_timeout_() {
+  // In Sleep Monitoring mode, FW3 stops emitting anything about presence
+  // once GTrack releases the track — no 0x0159, no 0x0167, no 0x0171, no
+  // 0x0104. The sensors would otherwise latch at their last-seen ON value
+  // indefinitely. If we haven't seen any occupancy signal for this long
+  // (comfortably past the 0x0159 ~6 s cadence and well beyond a plausible
+  // transient), declare the bed empty and clear the derived sensors.
+  //
+  // last_vitals_millis_ is stamped by every 0x0159 frame and every
+  // 0x0167=1 / 0x0171=1 event (see their handlers). Once it's stale we
+  // zero it to avoid re-firing the cascade each loop.
+  if (!sleep_mode_active_ || last_vitals_millis_ == 0) {
+    return;
+  }
+  if ((millis() - last_vitals_millis_) < SLEEP_QUIET_TIMEOUT_MS_) {
+    return;
+  }
+  ESP_LOGI(TAG, "Sleep-mode quiet timeout: no occupancy signal for >%us, clearing",
+           SLEEP_QUIET_TIMEOUT_MS_ / 1000U);
+  last_vitals_millis_ = 0;
+  if (global_presence_active_) {
+    global_presence_active_ = false;
+    if (global_presence_sensor_ != nullptr) {
+      global_presence_sensor_->publish_state(false);
+    }
+  }
+  if (sleep_presence_sensor_ != nullptr) {
+    sleep_presence_sensor_->publish_state(false);
+  }
+  if (sleep_state_sensor_ != nullptr) {
+    sleep_state_sensor_->set_has_state(false);
+  }
+  if (heart_rate_sensor_ != nullptr) {
+    heart_rate_sensor_->publish_state(NAN);
+  }
+  if (respiration_rate_sensor_ != nullptr) {
+    respiration_rate_sensor_->publish_state(NAN);
+  }
+  if (heart_rate_dev_sensor_ != nullptr) {
+    heart_rate_dev_sensor_->publish_state(NAN);
+  }
+  hr_window_.clear();
 }
 
 void FP2Component::check_initialization_() {
@@ -637,14 +765,15 @@ void FP2Component::check_initialization_() {
     // radar_ready_init_state @ 0x400e6350, after_radar_ready_poll @ 0x400e62b0
     // only READ 0x0102/0x0116/0x0128 lazily). All WRITEs are cloud-forwarded
     // ZCL writes from the Aqara app. Our 15+ WRITE init burst is our
-    // invention and may be destabilising FW3 sleep-mode DSS.
+    // invention and was destabilising FW3 sleep-mode DSS GTrack allocation.
     //
-    // emulate_stock=true skips this block so the radar keeps whatever config
-    // it has in flash (from prior Aqara-app pairing or prior WORK_MODE=N
-    // flash-save). Grids + zones still get sent below because our empirical
-    // testing found presence detection requires them even though stock
-    // doesn't send them.
-    if (!emulate_stock_) {
+    // emulate_stock=true skips this block ONLY in sleep mode so the radar
+    // keeps whatever config is in flash (from prior Aqara-app pairing or
+    // prior WORK_MODE=N flash-save). Zone and Fall modes still get the full
+    // init because their DSS pipelines don't have the GTrack velocity-gate
+    // problem and empirically need our config writes to track properly.
+    // Grids + zones below always run regardless.
+    if (!(emulate_stock_ && sleep_mode_active_)) {
     enqueue_command_(OpCode::WRITE, AttrId::MONITOR_MODE, (uint8_t) 0);
     enqueue_command_(OpCode::WRITE, AttrId::LEFT_RIGHT_REVERSE,
                      (uint8_t)(left_right_reverse_ ? 2 : 0));
@@ -652,34 +781,44 @@ void FP2Component::check_initialization_() {
     enqueue_command_(OpCode::WRITE, AttrId::CLOSING_SETTING, (uint8_t) 1);
     enqueue_command_(OpCode::WRITE, AttrId::ZONE_CLOSE_AWAY_ENABLE, (uint16_t) 0x0001);
     enqueue_command_(OpCode::WRITE, AttrId::FALL_SENSITIVITY, fall_detection_sensitivity_);
-    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, true); // BOOL
-    enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, true); // BOOL
+    // Critical: these four "report_enable" BOOLs are misleadingly named —
+    // setting them to TRUE switches the radar into an alternate "people
+    // counting" output format that SUPPRESSES the standard 0x0103/0x0104
+    // global motion/presence stream. Stock Aqara sends them all FALSE
+    // (captured in upstream PROTOCOL decoded_conf_zone.txt at Seq 11-13 —
+    // presence/motion emissions begin immediately after the FALSE write).
+    // Verified 2026-04-23: forcing these to FALSE restores normal
+    // 0x0103/0x0104/0x0155 emissions in Zone Detection. Setting to TRUE
+    // made them silent while only 0x0117 target tracking flowed.
+    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_COUNT_REPORT_ENABLE, false); // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::PEOPLE_NUMBER_ENABLE, false);       // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::TARGET_TYPE_ENABLE, false);         // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::POSTURE_REPORT_ENABLE, false);      // BOOL
     // SLEEP_REPORT_ENABLE is sent LAST — see end of init sequence.
     // A READ in the 0x01xx range triggers scene mode 3, which clears sleep_report_enable.
-    // Location reporting must stay enabled at the radar level — people counting
-    // depends on it internally. The Report Targets switch controls whether
-    // target data is published to the text sensor, not whether the radar tracks.
+    //
+    // LOCATION_REPORT_ENABLE (0x0112) — gates the 0x0117 target stream.
+    //   - Fall Detection mode: 0 (user wants fall events only, no positions)
+    //   - Fall + Positioning: 1 (user wants both)
+    //   - Zone Detection, Sleep Monitoring, unknown/default: 1 (tracking
+    //     is needed for people counting, zone inference, and the internal
+    //     state the radar uses for other sensors)
     // BOOL (type 0x04), not UINT8 — matches stock cloud handler at
     // FUN_400e4e7c which sets uStack_36=4. Sending as UINT8 gets rejected.
-    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE, true);  // BOOL
+    enqueue_command_(OpCode::WRITE, AttrId::LOCATION_REPORT_ENABLE,
+                     !fall_only_mode_active_);  // BOOL
     enqueue_command_(OpCode::WRITE, AttrId::WALL_CORNER_POS, mounting_position_);
     enqueue_command_(OpCode::WRITE, AttrId::DWELL_TIME_ENABLE, (uint8_t)(dwell_time_enable_ ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::WALK_DISTANCE_ENABLE,
                      (uint8_t)(walking_distance_sensor_ != nullptr ? 1 : 0));
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_EN, true);
     enqueue_command_(OpCode::WRITE, AttrId::THERMO_DATA, (uint8_t) 1);
-    if (fall_overtime_period_ > 0) {
-      // UINT32 — send as two uint16 WRITEs (high word then low word) via blob
-      std::vector<uint8_t> fop_data = {
-        (uint8_t)((fall_overtime_period_ >> 24) & 0xFF),
-        (uint8_t)((fall_overtime_period_ >> 16) & 0xFF),
-        (uint8_t)((fall_overtime_period_ >> 8) & 0xFF),
-        (uint8_t)(fall_overtime_period_ & 0xFF)
-      };
-      enqueue_command_blob2_(AttrId::FALL_OVERTIME_PERIOD, fop_data);
-    }
+    // FALL_OVERTIME_PERIOD (0x0134) WRITE removed 2026-04-23: audit of
+    // stock FW1 (fp2_aqara_fw1.bin) showed this SubID is not in the
+    // cloud-attr dispatch table, so stock never writes it and the radar
+    // almost certainly rejects / silently drops our WRITE. The YAML
+    // option is retained for backwards compatibility of existing configs
+    // but has no effect. See docs/06-changelog.md for the full audit.
     if (sleep_mount_position_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::SLEEP_MOUNT_POSITION, (uint8_t) sleep_mount_position_);
     }
@@ -692,6 +831,12 @@ void FP2Component::check_initialization_() {
       };
       enqueue_command_blob2_(AttrId::SLEEP_ZONE_SIZE, szs_data);
     }
+    // FALL_DELAY_TIME (0x0179) WRITE — re-instated 2026-04-23 after
+    // radar-side Ghidra verification. Stock ESP doesn't emit this via
+    // its cloud-attr dispatcher, but FW1 MSS has a real handler at
+    // 0x00026200: reads u16 from payload, stores to config offset +0x290,
+    // logs "fall_delay_time: %d\n". So the radar DOES accept this WRITE
+    // even though the cloud path doesn't route it. U16 dtype matches.
     if (fall_delay_time_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::FALL_DELAY_TIME, fall_delay_time_);
     }
@@ -701,11 +846,17 @@ void FP2Component::check_initialization_() {
     if (overhead_height_ > 0) {
       enqueue_command_(OpCode::WRITE, AttrId::OVERHEAD_HEIGHT, overhead_height_);
     }
+    // FALLDOWN_BLIND_ZONE (0x0180) WRITE — re-instated 2026-04-23 after
+    // radar-side Ghidra verification. Stock ESP doesn't emit this, but
+    // FW1 MSS handler at 0x0001da24 does real work: memcmp's 40 bytes
+    // at config+0x1c, memcpy's if different, sets change flags at
+    // +0xa4/+0xa5. So the radar accepts this WRITE independent of
+    // stock ESP routing.
     if (has_falldown_blind_zone_) {
       enqueue_command_blob2_(AttrId::FALLDOWN_BLIND_ZONE,
           std::vector<uint8_t>(falldown_blind_zone_.begin(), falldown_blind_zone_.end()));
     }
-    }  // end if (!emulate_stock_)
+    }  // end if (!(emulate_stock_ && sleep_mode_active_))
 
     // 2. Grids — all three must be sent every init for the radar to produce
     //    presence/motion reports.  Send configured grids or empty defaults.
@@ -816,8 +967,19 @@ void FP2Component::check_initialization_() {
     }
 
     // 7. Publish known initial states after reset
-    // After radar reset, we know there is no occupancy/motion detected yet
-    ESP_LOGI(TAG, "Publishing initial states (no occupancy after reset)");
+    // After radar reset, we know there is no occupancy/motion detected yet.
+    //
+    // Exception: if we've already seen a sleep-occupancy signal in the
+    // last 30 s (0x0159/0x0167/0x0171), the sleeper is already tracked —
+    // suppress the global/sleep OFF publishes so the 45 s re-init doesn't
+    // flatten the state we just asserted. Other sensors (zones, motion,
+    // people count, fall) still reset normally.
+    const bool have_fresh_vitals =
+        sleep_mode_active_ && last_vitals_millis_ != 0 &&
+        (millis() - last_vitals_millis_) < 30000U;
+
+    ESP_LOGI(TAG, "Publishing initial states (no occupancy after reset)%s",
+             have_fresh_vitals ? " — sleep occupancy preserved" : "");
     for (const auto &zone : zones_) {
       zone->publish_presence(false);
       zone->publish_motion(false);
@@ -826,12 +988,16 @@ void FP2Component::check_initialization_() {
       }
     }
 
-    if (global_presence_sensor_ != nullptr) global_presence_sensor_->publish_state(false);
+    if (!have_fresh_vitals) {
+      if (global_presence_sensor_ != nullptr) global_presence_sensor_->publish_state(false);
+    }
     if (global_motion_sensor_ != nullptr) global_motion_sensor_->publish_state(false);
     if (people_count_sensor_ != nullptr) people_count_sensor_->publish_state(0);
     if (fall_detection_sensor_ != nullptr) fall_detection_sensor_->publish_state(false);
-    if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->publish_state("none");
-    if (sleep_presence_sensor_ != nullptr) sleep_presence_sensor_->publish_state(false);
+    if (!have_fresh_vitals) {
+      if (sleep_state_sensor_ != nullptr) sleep_state_sensor_->set_has_state(false);
+      if (sleep_presence_sensor_ != nullptr) sleep_presence_sensor_->publish_state(false);
+    }
 
     // Clear target tracking state - no targets after reset
     if (target_tracking_sensor_ != nullptr) {
@@ -1145,6 +1311,16 @@ void FP2Component::handle_parsed_frame_(uint8_t type, AttrId attr_id,
         ESP_LOGW(TAG, "[READBACK] SubID=0x%04X short payload (len=%d)",
                  (uint16_t) attr_id, (int) payload.size());
       }
+      // Also route known SubIDs through the publish handlers so sensors
+      // populate from the READ response. FW3 (Sleep) doesn't emit
+      // unsolicited 0x0128 REPORTs — the READ reply is the only source.
+      switch (attr_id) {
+        case AttrId::TEMPERATURE:
+          handle_temperature_report_(payload);
+          break;
+        default:
+          break;
+      }
       break;
     default:
       ESP_LOGW(TAG, "Unhandled OpCode: %d", type);
@@ -1322,10 +1498,26 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
     case AttrId::PRESENCE_DETECT:
         if (payload.size() == 4 && payload[2]  == 0x00) {
             uint8_t state = payload[3];
-            publish_radar_state_(state != 0 ? "Presence" : "Ready");
+            bool present = (state != 0);
+
+            // Sleep-mode guard: FW3 emits 0x0104=0 for a stationary sleeper
+            // even while GTrack has an active track and 0x0159 vitals are
+            // still streaming. If we've seen a valid HR within the last
+            // ~30 s, treat a 0x0104=0 as stale and skip both the publish
+            // and the clear cascade — otherwise the cascade would wipe
+            // sleep_presence + HR + BR + HR-deviation every few seconds.
+            // Non-sleep modes and 0x0104!=0 events are unchanged.
+            if (sleep_mode_active_ && !present && last_vitals_millis_ != 0 &&
+                (millis() - last_vitals_millis_) < 30000U) {
+                ESP_LOGD(TAG, "0x0104=0 suppressed in sleep mode "
+                              "(last vitals %ums ago)",
+                         (unsigned)(millis() - last_vitals_millis_));
+                break;
+            }
+
+            publish_radar_state_(present ? "Presence" : "Ready");
             // Stock firmware: 0 = empty, non-zero = occupied
             // (NOT the same as motion which uses even/odd)
-            bool present = (state != 0);
             global_presence_active_ = present;
             if (global_presence_sensor_ != nullptr) {
                 global_presence_sensor_->publish_state(present);
@@ -1356,7 +1548,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 }
                 // Clear sleep-related sensors
                 if (sleep_state_sensor_ != nullptr) {
-                    sleep_state_sensor_->publish_state("none");
+                    sleep_state_sensor_->set_has_state(false);
                 }
                 if (sleep_presence_sensor_ != nullptr) {
                     sleep_presence_sensor_->publish_state(false);
@@ -1370,6 +1562,7 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 if (heart_rate_dev_sensor_ != nullptr) {
                     heart_rate_dev_sensor_->publish_state(NAN);
                 }
+                hr_window_.clear();
                 // Clear target tracking blob. Without this, the last
                 // non-empty 0x0117 payload keeps rendering in HA (and
                 // the card) as a ghost target glued to its final reported
@@ -1445,12 +1638,13 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 
     case AttrId::FALL_DETECTION_RESULT:
         // 0x0121 — fall detection event from FW2's fall ML state machine.
-        // Emitted as op=5 with UINT8: 0=clear, 1=fall type A, 2=fall type B.
-        // Confirmed via Ghidra of FW2 MSS (fp2_radar_mss_fw2.bin): FUN_0001db70
-        // calls the frame serializer with SubID=0x121 and 1-byte payload. Debug
-        // string "fall_detection:%d" sits at the emit site. Only fires in
-        // work_mode=8 when the fall ML flags a ballistic upright→horizontal
-        // motion pattern — lying down calmly will NOT trigger it.
+        // Emitted as op=5 UINT8. Stock stores the raw u8 with no bit-level
+        // interpretation; we treat it as a boolean (0=clear, non-zero=fall).
+        // Confirmed via Ghidra of FW2 MSS (fp2_radar_mss_fw2.bin) at radar
+        // offset 0x0001db92 loading `[r0+0x50c]`, and the stock ESP routing
+        // table at RAM 0x3ffb13a0 → handler 0x400e5388. Only fires in
+        // work_mode=8 on a ballistic upright→horizontal motion pattern —
+        // lying down calmly will NOT trigger it.
         if (payload.size() >= 4 && payload[2] == 0x00) {
             uint8_t state = payload[3];
             ESP_LOGI(TAG, "Fall detection (0x0121): %u", state);
@@ -1478,7 +1672,10 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
         // DwellTime = 0.15 * cumulative_frame_count (NOT a fall indicator).
         // This SubID is sent from the radar's people counting function, which
         // also handles the "fall area" debug output — but the ontime/dwell field
-        // is NOT fall detection. Actual fall detection uses SubID 0x0306.
+        // is NOT fall detection. Fall events use SubID 0x0121 (see
+        // AttrId::FALL_DETECTION_RESULT above). A prior comment in this file
+        // claimed "SubID 0x0306" was the fall channel — that was fiction; no
+        // MSS firmware emits 0x0306.
         if (payload.size() >= 12 && payload[2] == 0x06) {
             uint16_t blob_len = (payload[3] << 8) | payload[4];
             if (blob_len >= 7 && payload.size() >= 5 + blob_len) {
@@ -1510,17 +1707,18 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
 
     case AttrId::FALL_OVERTIME_DETECTION:
     case AttrId::FALL_OVERTIME_REPORT:
-        // 0x0135/0x0136 — Fall overtime. Handler for both SubIDs since dispatch
-        // table analysis shows radar_fall_overtime_det handles 0x0136 while
-        // 0x0135 goes to a config handler. Accept either.
-        if (payload.size() >= 7 && payload[2] == 0x02) {
-            uint32_t value = ((uint32_t)payload[3] << 24) | ((uint32_t)payload[4] << 16) |
-                             ((uint32_t)payload[5] << 8) | ((uint32_t)payload[6]);
-            ESP_LOGW(TAG, "Fall overtime (0x%04X): value=%u", (uint16_t)attr_id, value);
-            if (fall_overtime_sensor_ != nullptr) {
-                fall_overtime_sensor_->publish_state(value != 0);
-            }
-        }
+        // 0x0135 / 0x0136 — NOT fall overtime. 2026-04-23 audit of stock
+        // FW1 confirmed: 0x0135's stock handler (0x400e11ac) reads a u16
+        // calibration/version value (format string "13.25.85"); 0x0136's
+        // stock handler (0x400df760) is a 3-byte stub. Neither is a fall
+        // event. FW2 radar emits only 0x0121 for fall detection — there
+        // is no "fall overtime" stream on the wire.
+        //
+        // Kept as a no-op to avoid accidental publish. The
+        // fall_overtime_sensor_ entity is deprecated and will never
+        // populate under the current protocol understanding.
+        ESP_LOGD(TAG, "Ignoring 0x%04X — not a fall-overtime event (deprecated SubID)",
+                 (uint16_t)attr_id);
         break;
 
     case AttrId::SLEEP_STATE:
@@ -1550,6 +1748,16 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             if (sleep_presence_sensor_ != nullptr) {
                 sleep_presence_sensor_->publish_state(state != 0);
             }
+            // Sleep presence ON → force global presence ON + stamp the
+            // vitals watermark so 0x0104=0 is suppressed even before FFT
+            // fills. One-way only: never flip global OFF from here.
+            if (state != 0) {
+                last_vitals_millis_ = millis();
+                if (global_presence_sensor_ != nullptr && !global_presence_active_) {
+                    global_presence_active_ = true;
+                    global_presence_sensor_->publish_state(true);
+                }
+            }
         }
         break;
 
@@ -1561,6 +1769,14 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
             // Update sleep presence from in/out events too
             if (sleep_presence_sensor_ != nullptr) {
                 sleep_presence_sensor_->publish_state(state != 0);
+            }
+            // Same global-presence assertion + watermark as SLEEP_PRESENCE.
+            if (state != 0) {
+                last_vitals_millis_ = millis();
+                if (global_presence_sensor_ != nullptr && !global_presence_active_) {
+                    global_presence_active_ = true;
+                    global_presence_sensor_->publish_state(true);
+                }
             }
         }
         break;
@@ -1607,6 +1823,42 @@ void FP2Component::handle_report_(AttrId attr_id, const std::vector<uint8_t> &pa
                 }
                 if (respiration_rate_sensor_ != nullptr) {
                     respiration_rate_sensor_->publish_state(br_bpm > 0 ? (float) br_bpm : NAN);
+                }
+                // Any 0x0159 frame implies a GTrack-allocated track in the
+                // bed → stamp the watermark so the 0x0104=0 clear cascade
+                // is suppressed. This covers the first ~30 s after FW3
+                // boot too, when HR is still 0 because the vital-signs
+                // FFT windows haven't filled. Also assert global presence
+                // (one-way only; clearing stays with the gated 0x0104
+                // cascade after the watermark expires).
+                last_vitals_millis_ = millis();
+                if (global_presence_sensor_ != nullptr && !global_presence_active_) {
+                    global_presence_active_ = true;
+                    global_presence_sensor_->publish_state(true);
+                }
+
+                // Heart rate deviation: rolling population std dev over the
+                // last HR_WINDOW_SIZE_ valid HR readings. The radar itself
+                // does not emit a deviation value (0x0117's heartDev slot is
+                // always zero; 0x0159 has no deviation field), so we derive
+                // one here — a reasonable HRV proxy at ~6s sample rate.
+                if (hr_bpm > 0) {
+                    hr_window_.push_back(hr_bpm);
+                    if (hr_window_.size() > HR_WINDOW_SIZE_) {
+                        hr_window_.pop_front();
+                    }
+                    if (heart_rate_dev_sensor_ != nullptr && hr_window_.size() >= 2) {
+                        double sum = 0.0;
+                        for (uint8_t v : hr_window_) sum += v;
+                        double mean = sum / hr_window_.size();
+                        double sq = 0.0;
+                        for (uint8_t v : hr_window_) {
+                            double d = (double) v - mean;
+                            sq += d * d;
+                        }
+                        float stddev = (float) std::sqrt(sq / hr_window_.size());
+                        heart_rate_dev_sensor_->publish_state(stddev);
+                    }
                 }
             } else {
                 ESP_LOGW(TAG, "Sleep blob 0x159 unexpected size %d bytes", blob_len);
@@ -1825,31 +2077,31 @@ void FP2Component::handle_location_tracking_report_(const std::vector<uint8_t> &
   // When sleep_mode_active_ we route to the vitals decode; otherwise to the
   // tracking decode.
   if (this->sleep_mode_active_) {
-    // Diagnostic: dump the raw blob so we can see what FW3 is actually sending.
+    // 2026-04-22: FW3 canonical vitals channel is SubID 0x0159 (handled in
+    // AttrId::SLEEP_DATA) — ungated, fires every ~6s whenever a track is
+    // allocated. SubID 0x0117 in mode 9 is a secondary 100x-scaled channel
+    // that rarely fires (needs LOCATION_REPORT_ENABLE=1 + target_count>0 +
+    // counter>15 + motion flags). To avoid racing the 0x0159 handler and
+    // clobbering valid readings with NAN or stale scaled values, the HR/BR
+    // sensor publish is disabled here. Keep logging so we can observe if
+    // 0x0117 ever does fire.
     if (debug_mode_) {
       char hexbuf[128];
       int n = 0;
       for (size_t i = 0; i < payload.size() && n < 120; i++) {
         n += snprintf(hexbuf + n, sizeof(hexbuf) - n, "%02x ", payload[i]);
       }
-      ESP_LOGD(TAG, "Vitals frame (size=%zu): %s", payload.size(), hexbuf);
+      ESP_LOGD(TAG, "0x0117 FW3 frame (size=%zu): %s (diagnostic only; sensors driven by 0x0159)",
+               payload.size(), hexbuf);
     }
-    uint8_t vcount = payload[5];
-    if (vcount == 0 || payload.size() < 6 + 14) {
-      // Empty vitals frame (FW3 FUN_0002dc40 clear-path) or truncated payload.
-      ESP_LOGD(TAG, "Vitals: empty frame (count=%u size=%zu) — no target locked", vcount, payload.size());
-      if (heart_rate_sensor_ != nullptr) heart_rate_sensor_->publish_state(NAN);
-      if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(NAN);
-      return;
+    if (payload.size() >= 6 + 14) {
+      uint8_t vcount = payload[5];
+      const int off = 6;
+      uint16_t hr_x100 = ((uint16_t) payload[off + 1] << 8) | payload[off + 2];
+      uint16_t br_x100 = ((uint16_t) payload[off + 3] << 8) | payload[off + 4];
+      ESP_LOGD(TAG, "0x0117 FW3: count=%u tid=%u HR_x100=%u BR_x100=%u (not published)",
+               vcount, payload[off], hr_x100, br_x100);
     }
-    const int off = 6;
-    uint16_t hr_x100 = ((uint16_t) payload[off + 1] << 8) | payload[off + 2];
-    uint16_t br_x100 = ((uint16_t) payload[off + 3] << 8) | payload[off + 4];
-    float hr_bpm = hr_x100 / 100.0f;
-    float br_bpm = br_x100 / 100.0f;
-    if (heart_rate_sensor_ != nullptr) heart_rate_sensor_->publish_state(hr_bpm);
-    if (respiration_rate_sensor_ != nullptr) respiration_rate_sensor_->publish_state(br_bpm);
-    ESP_LOGD(TAG, "Vitals: track_id=%u HR=%.1f BR=%.1f", payload[off], hr_bpm, br_bpm);
     return;
   }
 
@@ -2339,6 +2591,23 @@ void FP2Component::dump_config() {
     if (!radar_firmware_url_.empty()) {
       ESP_LOGCONFIG(TAG, "  Firmware URL: %s", radar_firmware_url_.c_str());
     }
+  }
+  // Deprecation warnings — only for things that actually don't work.
+  // fall_delay_time (0x0179) and falldown_blind_zone (0x0180) are
+  // accepted by the radar MSS directly (verified via Ghidra against
+  // fp2_radar_mss.bin handlers at 0x00026200 and 0x0001da24) even
+  // though stock ESP doesn't route them through the cloud-attr path.
+  // fall_overtime_period (0x0134) really is dead — FW1 dispatcher
+  // routes it to the unknown-SubID error path.
+  if (fall_overtime_period_ > 0) {
+    ESP_LOGW(TAG, "  fall_overtime_period (%u ms) is configured but NOT sent to radar — "
+                  "SubID 0x0134 lands in FW1 MSS unknown-SubID error path. No-op.",
+             (unsigned) fall_overtime_period_);
+  }
+  if (fall_overtime_sensor_ != nullptr) {
+    ESP_LOGW(TAG, "  fall_overtime sensor is deprecated — radar does not emit "
+                  "a fall-overtime event on SubID 0x0135 or 0x0136. Sensor will "
+                  "remain 'unknown'.");
   }
 }
 

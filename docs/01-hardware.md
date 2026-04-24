@@ -109,6 +109,14 @@ esp32:
   register `0x7F` = `0x3001` (OPT3001)
 - **Source file**: `apps/user/hal/acceleration_ambinent_light.c`
 - **Status**: Fully implemented in ESPHome component
+- **Optical cross-talk with status LED**: The OPT3001 and the on-board
+  indicator LED share the same front optical window. When the LED is on,
+  the sensor sees extra lux from the LED's own emission (most pronounced
+  in dark rooms, where the LED contribution can dominate the reading).
+  To measure true ambient light, either turn the LED off via the HA
+  entity or ignore samples taken while the LED is on. Stock firmware
+  sidesteps this via `lux_acc_led_onoff` which modulates LED brightness
+  based on ambient lux — the ESPHome component does not replicate this.
 
 ### RGB LED
 
